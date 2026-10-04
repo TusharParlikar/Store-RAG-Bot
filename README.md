@@ -149,6 +149,17 @@ tests/scenarios.py       end-to-end chat scenarios
 project.md               full design and build plan
 ```
 
+## Tests
+
+```bash
+python -m gen.warranty          # warranty date edge cases
+python -m gen.answer            # Python self-checks, then a few live questions
+python -m tests.scenarios       # 72 chat scenarios against the real index and LLM
+python -m tests.scenarios 3     # 3 rounds each, to catch flaky model output
+```
+
+The scenarios cover prices, policies, needs and feelings, products not sold, off-topic questions, chit-chat, complaints, memory, buying, and two fresh sets written after the prompts were tuned. The last full run with `qwen3:1.7b` passed 65 of 72.
+
 ## Stack
 
 | Part | Choice |
@@ -167,13 +178,3 @@ Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from TidyTue
 - Source: https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-11-03
 
 The dataset has name, category, price and description. The extra columns project.md needs (`warranty_months`, `benefit`, `good_for`, `goes_with`) are set per category in `CATEGORY_INFO` in [nlp/prepare_products.py](nlp/prepare_products.py). The policy files in [data/rules/](data/rules/) are demo store policies.
-
-## Tests
-
-```bash
-python -m gen.warranty          # warranty date edge cases
-python -m tests.scenarios       # 22 end-to-end chat scenarios against the real index and LLM
-python -m tests.scenarios 3     # same, 3 rounds each to catch flaky LLM output
-```
-
-On CPU with `qwen3:1.7b`, each reply takes about 10 to 30 seconds (two LLM calls: product check and answer).
