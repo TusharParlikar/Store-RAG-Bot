@@ -129,6 +129,7 @@ All settings are environment variables, read by [config.py](config.py). See [.en
 | `LLM_MODEL` | no | `qwen3:1.7b` | Model name (`qwen/qwen3-32b` on Groq) |
 | `LLM_TEMPERATURE` | no | `0.8` | Warmth of product replies (understanding uses 0, policy answers 0.3) |
 | `LLM_REASONING_EFFORT` | no | `none` | `none` turns Qwen3 thinking off (about 30x faster) |
+| `LLM_KEEP_ALIVE` | no | `2h` for a local endpoint, otherwise unset | How long Ollama keeps the model loaded; reloading costs over a minute on a laptop CPU |
 | `EMBED_MODEL` | no | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
 
 `.env` is git-ignored. Never commit keys. Deployment steps: [DEPLOYMENT.md](DEPLOYMENT.md).
@@ -176,7 +177,7 @@ Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from [TidyTu
 ## Limitations
 
 Seen in testing with the local `qwen3:1.7b` model:
-- A reply takes 10 to 55 seconds on CPU.
+- Speed on a laptop CPU (i5-1335U, no GPU): the model reads prompts at about 50 tokens/s and writes about 11 to 16 tokens/s. Replies stream word by word, but the first words still take 20 to 35 seconds and a full reply 25 to 55 seconds. Starting the app takes about 2 minutes, because it loads the model and caches the long understanding prompt up front, so customers don't pay for that. Groq answers in seconds.
 - It sometimes skips the requested opening, for example no "congratulations" after "my daughter got into college".
 - Product descriptions can drift towards health wording ("pain relief") despite the comfort-only rule.
 - A complaint about a broken item may get the return policy instead of the warranty repair route.
