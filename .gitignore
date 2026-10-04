@@ -5,3 +5,4 @@ __pycache__/
 data/orders/*.json
 index/
 data/requests/*.csv
+graphify-out/
