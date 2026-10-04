@@ -3,11 +3,14 @@
 Each scenario: question, expected kind of reply, and text that must appear.
 kinds: answer (normal reply), missing (not-available line + substitute), idk (refusal)
 A must-have string starting with "!" must NOT appear.
+An optional 4th item gives answer() earlier user messages ("history") and, as a search query, the products
+the bot just listed ("shown").
 """
 import sys
 import time
 
 from gen.answer import IDK, answer
+from rag.index import search
 
 SCENARIOS = [
     # prices and products in stock
@@ -42,8 +45,63 @@ SCENARIOS = [
     ("hi there, I want to build this chatbot", "answer", ["!₹"]),
     # complaint: empathy, then policy
     ("the chair I bought arrived broken and I'm really upset", "answer", ["sorry", "!₹"]),
-    # memory: the earlier message explains the new one (4th item = earlier messages)
-    ("I need something for my room", "answer", ["sorry", "₹", "!- Leg"], ["my leg is broken"]),
+    # memory: the earlier message explains the new one
+    ("I need something for my room", "answer", ["sorry", "₹", "!- Leg"], {"history": ["my leg is broken"]}),
+    # buying: details + next step; ask which one when several were listed
+    ("HATTEFJÄLL office chair, I would like to buy this, tell me more", "answer",
+     ["HATTEFJÄLL", "Warranty: 60 months", "proceed", "!sorry"]),
+    ("ok ill get that", "answer", ["which one", "1. **", "3. **", "!4. **"],
+     {"history": ["my neck hurts"], "shown": "office chair with armrests"}),
+    ("the second one", "answer", ["Price: ₹", "proceed"], {"shown": "office chair with armrests"}),
+    ("2", "answer", ["Price: ₹", "proceed"], {"shown": "office chair with armrests"}),
+    # more feelings and life events: empathy first, real furniture, a next step towards buying, no medical promises
+    ("my father had knee surgery and comes home next week", "answer", ["sorry", "₹", "would you like", "!- Leg", "!cure"]),
+    ("I work from home and my back hurts by evening", "answer", ["sorry", "₹", "would you like", "!cure"]),
+    ("we just got married and moved into a new flat", "answer", ["congrat", "₹", "would you like", "!sorry"]),
+    ("I feel lonely since I moved to a new city", "answer", ["₹", "would you like"]),
+    ("my son starts school next month and needs a place to study", "answer", ["₹", "would you like", "!sorry"]),
+    ("my grandmother finds it hard to get out of bed", "answer", ["sorry", "₹", "!cure"]),
+    # general shopping: every product list ends with a next step
+    ("Do you have a dining table for 6 people?", "answer", ["1. **", "₹", "would you like"]),
+    ("Which is better for a small room, a sofa-bed or a daybed?", "answer", ["₹"]),
+    ("I need a desk under ₹10,000", "answer", ["₹", "would you like"]),
+    # general chat and questions
+    ("hello!", "answer", ["!₹"]),
+    ("thank you so much", "answer", ["!₹"]),
+    ("how do I cook biryani?", "idk", [IDK]),
+    ("where is my order ORD-0042?", "answer", ["!₹"]),
+    # fresh set: written after the prompts were tuned, to check they generalise
+    ("I'm recovering from back surgery and can't bend much", "answer", ["sorry", "₹", "would you like", "!cure"]),
+    ("my husband snores and I can't sleep", "answer", ["₹", "would you like"]),
+    ("I just got promoted and want a nicer home office", "answer", ["congrat", "₹", "would you like", "!sorry"]),
+    ("my wife is pregnant and gets tired standing in the kitchen", "answer", ["₹", "would you like", "!cure"]),
+    ("I'm a student with a very small room", "answer", ["₹", "would you like"]),
+    ("my elderly parents are moving in with us", "answer", ["₹", "would you like"]),
+    ("our house got flooded and we lost our furniture", "answer", ["sorry", "₹", "would you like"]),
+    ("What is the cheapest bed you have?", "answer", ["₹"]),
+    ("Do you have something to store shoes?", "answer", ["₹", "would you like"]),
+    ("Can I get a refund without my order number?", "answer", ["credit", "!₹"]),
+    ("Do you sell laptops?", "missing", ["not available"]),
+    ("what's the weather like today?", "idk", [IDK]),
+    ("good morning", "answer", ["!₹"]),
+    ("the drawer of my wardrobe broke after two months", "answer", ["warranty", "!₹"]),
+    ("tell me more about the POÄNG armchair, I want to buy it", "answer", ["POÄNG", "Price: ₹", "proceed"]),
+    ("I'll take the first one", "answer", ["Price: ₹", "proceed"], {"shown": "comfortable armchair"}),
+    ("number 3 please", "answer", ["Price: ₹", "proceed"], {"shown": "dining table"}),
+    ("I'm so happy, my daughter got into college!", "answer", ["congrat", "₹", "!sorry"]),
+    # fresh set 2: written after fixing fresh set 1, never tuned on
+    ("I just adopted a cat and she scratches everything", "answer", ["₹", "would you like"]),
+    ("my back is stiff every morning", "answer", ["sorry", "₹", "!cure"]),
+    ("we're hosting Diwali dinner for 15 relatives", "answer", ["₹", "would you like"]),
+    ("I started night shifts and can't sleep during the day", "answer", ["₹", "would you like"]),
+    ("my two kids keep fighting over one desk", "answer", ["₹", "would you like"]),
+    ("Do you have a couch for a small living room?", "answer", ["₹", "would you like"]),
+    ("Do you sell air conditioners?", "missing", ["not available"]),
+    ("Can I return a cut-to-size worktop?", "answer", ["cut", "!₹"]),
+    ("the leg of my new table snapped", "answer", ["!₹"]),
+    ("who are you?", "answer", ["!₹"]),
+    ("write me a poem about the sea", "answer", ["only help", "!₹"]),
+    ("ok I'll take it", "answer", ["Price: ₹", "proceed"], {"shown": "POÄNG rocking-chair", "n": 1}),
 ]
 
 
@@ -55,10 +113,12 @@ def kind_of(r: dict) -> str:
 
 def main(rounds: int = 1):
     fails = 0
-    for q, want, must, *earlier in SCENARIOS:
+    for q, want, must, *extra in SCENARIOS:
+        opts = extra[0] if extra else {}
+        shown = [h for h in search(opts["shown"]) if h["kind"] == "product"][:opts.get("n", 3)] if "shown" in opts else []
         for _ in range(rounds):
             t = time.time()
-            r = answer(q, history=earlier[0] if earlier else [])
+            r = answer(q, history=opts.get("history", []), shown=shown)
             got = kind_of(r)
             text = r["text"].lower()
             ok = got == want and all((m[1:].lower() not in text) if m.startswith("!") else (m.lower() in text) for m in must)
