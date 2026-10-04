@@ -44,6 +44,16 @@ flowchart LR
     end
 ```
 
+### Customers describing a problem
+
+Every message (except policy questions) first goes through a small router (temperature 0, few-shot) that labels it:
+- `PRODUCT: desk lamp`: a product request. Checked against the catalogue, see below.
+- `NEED: armchair with armrests, footstool`: a pain, injury, worry or situation ("my leg is broken"). The bot searches for the furniture that helps, not the words of the problem (which would match table legs), drops spare parts, and opens with a line of sympathy.
+- `HAPPY: crib, changing table`: good news ("a baby is coming"). Same, but opens with congratulations.
+- `NONE`: policy or off-topic.
+
+Benefits stay at comfort level: no medical advice or promises.
+
 ### Products the store does not carry
 
 When a customer asks for something not in the catalogue (for example a desk lamp or a carpet), the bot:
@@ -51,7 +61,7 @@ When a customer asks for something not in the catalogue (for example a desk lamp
 2. Logs the request in `data/requests/requests.csv` (time, item, question), so the store can see what people ask for.
 3. Suggests the closest products it does have, with price and benefit.
 
-How it decides: the LLM only names the product kind (temperature 0, few-shot). Python then checks whether that word appears in any product name or category. A 1.7b model cannot judge stock reliably on its own.
+How it decides: the router names the product kind. Python then checks whether that word appears in any product name or category. A 1.7b model cannot judge stock reliably on its own.
 
 Key rules from the design:
 - `data/` is the only place facts live. The LLM only puts retrieved facts into words.
@@ -99,7 +109,7 @@ streamlit run app/main.py       # chat page at http://localhost:8501
 
 ```bash
 python -m gen.warranty          # warranty date edge cases
-python -m tests.scenarios       # 18 end-to-end chat scenarios against the real index and LLM
+python -m tests.scenarios       # 22 end-to-end chat scenarios against the real index and LLM
 python -m tests.scenarios 3     # same, 3 rounds each to catch flaky LLM output
 ```
 
@@ -114,7 +124,7 @@ All settings are environment variables. See [.env.example](.env.example).
 | `LLM_BASE_URL` | OpenAI-compatible endpoint (Ollama or Groq) |
 | `LLM_API_KEY` | API key (`ollama` for local) |
 | `LLM_MODEL` | Model name |
-| `LLM_TEMPERATURE` | 0.4 to 0.5 |
+| `LLM_TEMPERATURE` | 0.8 for warmer replies (the router always uses 0) |
 | `LLM_REASONING_EFFORT` | `none` turns Qwen3 thinking off (about 30x faster) |
 | `EMBED_MODEL` | Sentence-transformers model |
 
