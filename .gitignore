@@ -1,8 +1,29 @@
+# Secrets
 .env
 .streamlit/secrets.toml
+
+# Python
 __pycache__/
+*.py[cod]
 .venv/
-data/orders/*.json
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Built or written at run time
 index/
 data/requests/*.csv
+data/orders/*.json
+*.log
+
+# Tools
 graphify-out/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
