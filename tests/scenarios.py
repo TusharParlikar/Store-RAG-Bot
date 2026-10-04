@@ -10,9 +10,9 @@ from gen.answer import IDK, answer
 
 SCENARIOS = [
     # prices and products in stock
-    ("How much is the NORDVIKEN bar table?", "answer", ["995"]),
-    ("What does the LACK coffee table 118x78 cost?", "answer", ["149"]),
-    ("Do you have a coffee table?", "answer", ["coffee table"]),
+    ("How much is the NORDVIKEN bar table?", "answer", ["₹23,382"]),
+    ("What does the LACK coffee table 118x78 cost?", "answer", ["₹3,502"]),
+    ("Do you have a coffee table?", "answer", ["1. **", "₹"]),
     ("I need a wardrobe for my bedroom", "answer", ["wardrobe"]),
     ("Do you sell sofas?", "answer", ["sofa"]),
     ("Do you have a bunk bed?", "answer", ["bunk bed"]),
@@ -22,7 +22,7 @@ SCENARIOS = [
     ("What is your return window?", "answer", ["365"]),
     ("What does the warranty not cover?", "answer", ["wear"]),
     # needs
-    ("I have back pain from sitting all day", "answer", ["SAR"]),
+    ("I have back pain from sitting all day", "answer", ["₹"]),
     # not in stock: honest line + close suggestion
     ("Do you sell desk lamps?", "missing", ["not available"]),
     ("Do you sell ceiling fans?", "missing", ["not available"]),

@@ -70,7 +70,7 @@ Key rules from the design:
 
 ## Dataset
 
-Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from TidyTuesday 2020-11-03 (also on Kaggle as "IKEA SA Furniture Web Scraping"). 3,694 rows, 2,962 unique products, 17 categories, prices in SAR.
+Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from TidyTuesday 2020-11-03 (also on Kaggle as "IKEA SA Furniture Web Scraping"). 3,694 rows, 2,962 unique products, 17 categories. Raw prices are in SAR; [nlp/prepare_products.py](nlp/prepare_products.py) converts them to INR at `SAR_TO_INR` (23.5) and keeps the original in `price_sar`.
 
 - Raw file: [data/raw/ikea.csv](data/raw/ikea.csv)
 - Source: https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-11-03
