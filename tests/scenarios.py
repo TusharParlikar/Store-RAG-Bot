@@ -2,6 +2,7 @@
 
 Each scenario: question, expected kind of reply, and text that must appear.
 kinds: answer (normal reply), missing (not-available line + substitute), idk (refusal)
+A must-have string starting with "!" must NOT appear.
 """
 import sys
 import time
@@ -22,7 +23,12 @@ SCENARIOS = [
     ("What is your return window?", "answer", ["365"]),
     ("What does the warranty not cover?", "answer", ["wear"]),
     # needs
-    ("I have back pain from sitting all day", "answer", ["₹"]),
+    ("I have back pain from sitting all day", "answer", ["₹", "sorry"]),
+    # needs and feelings: empathy first, real furniture, no spare parts
+    ("my leg is broken suggest me something", "answer", ["sorry", "₹", "!- Leg"]),
+    ("I'm feeling stressed and can't sleep well", "answer", ["sorry", "₹"]),
+    ("my baby is coming next month", "answer", ["₹", "!sorry"]),
+    ("my mother is old and finds it hard to get up from the sofa", "answer", ["₹", "!Armrest**"]),
     # not in stock: honest line + close suggestion
     ("Do you sell desk lamps?", "missing", ["not available"]),
     ("Do you sell ceiling fans?", "missing", ["not available"]),
@@ -48,7 +54,8 @@ def main(rounds: int = 1):
             t = time.time()
             r = answer(q)
             got = kind_of(r)
-            ok = got == want and all(m.lower() in r["text"].lower() for m in must)
+            text = r["text"].lower()
+            ok = got == want and all((m[1:].lower() not in text) if m.startswith("!") else (m.lower() in text) for m in must)
             fails += not ok
             print(f"{'PASS' if ok else 'FAIL'} {time.time() - t:5.1f}s  [{got}] {q}")
             if not ok:
