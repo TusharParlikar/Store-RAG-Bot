@@ -133,6 +133,22 @@ All settings are environment variables, read by [config.py](config.py). See [.en
 
 `.env` is git-ignored. Never commit keys. Deployment steps: [DEPLOYMENT.md](DEPLOYMENT.md).
 
+## Project structure
+
+```
+app/main.py              Streamlit chat page, next-step buttons, warranty date box
+gen/answer.py            understanding, routing, prompts, stock check, purchase flow
+gen/warranty.py          warranty date maths in plain Python
+rag/index.py             build the FAISS index and search it
+nlp/chunks.py            chunking, embeddings, rupee formatting
+nlp/prepare_products.py  raw IKEA file to the product table
+data/raw/                downloaded dataset
+data/products/           product table used by the bot
+data/rules/              warranty, returns and expiry policies
+tests/scenarios.py       end-to-end chat scenarios
+project.md               full design and build plan
+```
+
 ## Stack
 
 | Part | Choice |
