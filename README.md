@@ -14,81 +14,32 @@ Customers rarely ask for a product by name. They say "my leg is broken" or "we'r
 - **Warranty check**: from a purchase date, Python works out whether the item is still covered.
 - **Runs locally or free in the cloud**: Ollama on your machine, or Groq's free tier when deployed. Same code.
 
-## Architecture
+## How it works
+
+### One message, start to finish
 
 ```mermaid
-flowchart LR
-    subgraph Build["Build phase (offline, when data changes)"]
-        RAW[data/raw/ikea.csv] --> PREP[nlp/prepare_products.py]
-        PREP --> PROD[data/products/products.csv]
-        RULES[data/rules/*.md] --> CHUNK[nlp/ chunk + embed<br/>all-MiniLM-L6-v2]
-        PROD --> CHUNK
-        CHUNK --> IDX[(rag/ FAISS index)]
-    end
-
-    subgraph Ask["Ask phase (every message)"]
-        USER([Customer]) --> APP[app/ Streamlit chat<br/>cart, Done button]
-        APP --> PLAN{plan/ router}
-        PLAN -->|question / need| SEARCH[rag/ search top 3-5]
-        PLAN -->|setup| SETUP[plan/ setup planner<br/>rules/setups + Python maths]
-        SETUP --> SEARCH
-        PLAN -->|done| SAVE[gen/ closing remark]
-        SEARCH --> IDX
-        SEARCH --> GEN[gen/ prompt + LLM call]
-        GEN --> LLM[[LLM via OpenAI-compatible API<br/>Ollama locally, Groq when deployed]]
-        GEN --> WARR[gen/ warranty check<br/>plain Python date maths]
-        SAVE --> ORD[(data/orders/)]
-        GEN --> APP
-    end
+sequenceDiagram
+    actor C as Customer
+    participant UI as app/main.py (Streamlit)
+    participant A as gen/answer.py
+    participant L as LLM (Ollama or Groq)
+    participant F as rag/index.py (FAISS)
+    C->>UI: "my leg is broken"
+    UI->>A: message + earlier messages + products shown last
+    A->>L: Call 1: understand the message (JSON)
+    L-->>A: intent, emotion, helpful furniture, meaning
+    Note over A: Python picks the path from the intent
+    A->>F: search "armchair with armrests footstool"
+    F-->>A: closest products and policies, with scores
+    A->>L: Call 2: store rules + products + needs + task
+    L-->>A: reply text
+    Note over A: Python adds the next step, the "not available" line, the request log
+    A-->>UI: text, sources, missing item, picked product
+    UI-->>C: reply, buttons, sources
 ```
 
-### Customers describing a problem
-
-Every message (except a warranty check with a purchase date) first goes through an understanding step: one LLM call (temperature 0, few-shot, JSON mode) that describes the message before anything is searched. It also sees the customer's last 3 messages, so "I need something for my room" after "my leg is broken" is understood as part of the same situation.
-
-```json
-{"intent": "PRODUCT_RECOMMENDATION", "item": "", "problem": "broken leg", "emotion": "pain",
- "sentiment": "negative", "furniture": ["armchair with armrests", "footstool"], "constraints": ["bedroom"],
- "meaning": "Needs bedroom furniture that is easy to use with a broken leg."}
-```
-
-The model only describes the message. Python decides what happens next:
-
-| Intent | What happens |
-|---|---|
-| `PRODUCT_SEARCH`, `PRODUCT_COMPARISON` | Search the question. The `item` is checked against the catalogue, see below. |
-| `PRODUCT_RECOMMENDATION` | Search for the `furniture` that helps, not the words of the problem (which would match table legs), and drop spare parts. |
-| `PURCHASE` | The customer picked one product: details and next steps, see below. |
-| `STORE_INFORMATION`, `ORDER_SUPPORT`, `COMPLAINT` | Policy sections only. |
-| `CASUAL_CONVERSATION` | A short friendly reply with no search and no store facts. |
-| `GENERAL_QUESTION` | "I don't know", without a second LLM call. |
-
-The opening of the reply follows the sentiment: sympathy for a problem or complaint, congratulations for good news ("a baby is coming"), and a short acknowledgement for a neutral situation. The answer step also receives the meaning, situation, feeling and limits, so it answers the reason behind the request, not only its words. If the JSON is broken, the message falls back to a plain search with the score cutoff.
-
-Benefits stay at comfort level: no medical advice or promises.
-
-### Customers who want to buy
-
-When a customer picks a product ("I'd like the HATTEFJÄLL chair, tell me more", "the second one", "ok I'll get that"), Python works out which product they mean. It checks names first (the products in the last reply come first), then words like "second" or "option 2". If only one product was listed, that one is picked. A buying phrase right after a list counts too, because the small model often reads "ok I'll get that" as the earlier need again.
-
-- **One product found:** a short, warm paragraph from the LLM, then the exact facts from the data (price, warranty, category, good for, goes well with). Under it are next-step buttons: Product page, What goes with it?, Warranty and returns, Similar options.
-- **Several listed, none named:** the bot asks which one, with a numbered list.
-
-The cart and saving the order come later (project.md steps 8 and 10).
-
-### Products the store does not carry
-
-When a customer asks for something not in the catalogue (for example a desk lamp or a carpet), the bot:
-1. Says honestly that it is not available and that the request was passed to the team.
-2. Logs the request in `data/requests/requests.csv` (time, item, question), so the store can see what people ask for.
-3. Suggests the closest products it does have, with price and benefit.
-
-How it decides: the understanding step names the product kind (`item`). Python then checks whether that word appears in any product name or category. A 1.7b model cannot judge stock reliably on its own.
-
-Key rules from the design:
-- `data/` is the only place facts live. The LLM only puts retrieved facts into words.
-- Low search score means "I don't know" without calling the LLM.
-- All maths (warranty dates, setup quantities) is plain Python, never the LLM.
+The model never decides on its own. It describes the message (call 1) and puts retrieved facts into words (call 2). Python does the routing, the stock check, the maths and the clean-up in between.
 
 ## Stack
 
