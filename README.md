@@ -172,3 +172,19 @@ Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from [TidyTu
 | LLM | `qwen3:1.7b` on Ollama (local), `qwen/qwen3-32b` on Groq free tier (deployed), through the OpenAI client |
 | Embeddings | `sentence-transformers/all-MiniLM-L6-v2` on CPU |
 | Vector search | FAISS (inner product on unit vectors = cosine) |
+
+## Limitations
+
+Seen in testing with the local `qwen3:1.7b` model:
+- A reply takes 10 to 55 seconds on CPU.
+- It sometimes skips the requested opening, for example no "congratulations" after "my daughter got into college".
+- Product descriptions can drift towards health wording ("pain relief") despite the comfort-only rule.
+- A complaint about a broken item may get the return policy instead of the warranty repair route.
+
+The deployed `qwen/qwen3-32b` should do better on the last three. That is untested.
+
+Not built yet (planned in [project.md](project.md)): a cart, a planner for bigger setups such as "an office for 30 people", and saving the final order with an order number.
+
+## License
+
+No license file.
