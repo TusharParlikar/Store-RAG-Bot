@@ -10,7 +10,8 @@ Customers rarely ask for a product by name. They say "my leg is broken" or "we'r
 - **Empathy first**: sympathy for a problem, congratulations for good news, then up to 3 products and how each one helps.
 - **Facts only from the data**: prices in ₹, warranty lengths and policies come from `data/`, never from the model's memory.
 - **Honest about stock**: "Sorry, laptop is not available in our store right now", logs the request for the store, and suggests the closest match.
-- **Guides the purchase**: "the second one" or "I'll take the HATTEFJÄLL" shows the exact product facts and next-step buttons.
+- **Guides the purchase**: "the second one", "1st", "number 2" or "I'll take the HATTEFJÄLL" shows the exact product facts, a product page link and next-step buttons.
+- **Direct links for named products**: mention a product by name ("How much is the MALM bed?") and the reply ends with links to its product pages. Names that are also everyday words ("LACK", "HALLO") count only when typed in capitals.
 - **Warranty check**: from a purchase date, Python works out whether the item is still covered.
 - **Runs locally or free in the cloud**: Ollama on your machine, or Groq's free tier when deployed. Same code.
 
