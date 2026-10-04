@@ -38,41 +38,83 @@ Rules:
 
 # Added to SYSTEM only when products are in the context: the small model copies a list template into everything.
 PRODUCT_FORMAT = """
-Format: start with a one-line greeting, then put each product on its own numbered line:
-the product name in bold, an en dash, the ₹ price, then its benefit from the context in a few words. Example:
-Hello! We have:
-1. **NAME - Product, size** – ₹price. Benefit in a few words.
-2. **NAME - Product, size** – ₹price. Benefit in a few words.
-List at most 3 products, the best matches first."""
+Format: start with a short, warm greeting, then put each product on its own numbered line:
+the product name in bold, an en dash, the ₹ price, then one friendly sentence on what it is and why it suits the customer.
+Example:
+Hello! Here is what we have for you:
+1. **NAME - Product, size** – ₹price. What it is and why it suits them.
+2. **NAME - Product, size** – ₹price. What it is and why it suits them.
+List at most 3 products, the best matches first. Copy names and prices exactly from the context."""
 
 POLICY_FORMAT = "\nFormat: answer in 1 to 3 plain sentences. No list, no prices."
 
 # Few-shot: a 1.7b model follows examples far better than instructions.
-EXTRACT = """Name the kind of product the customer wants to buy or asks about. Reply with the product kind only.
-If the message is about a policy (returns, warranty, delivery), a feeling or need, or is not about products, reply NONE.
+ROUTE = """Read the customer's message and reply with exactly one line:
+PRODUCT: <kind of product>  if they ask for, want or need any kind of item, even one a furniture store may not sell
+NEED: <furniture that would help>  if they describe a problem, pain, injury, feeling, life event or situation.
+  Name only furniture (chairs, armchairs, sofas, beds, footstools, tables, desks, storage), never medical items.
+HAPPY: <furniture that would help>  same as NEED, but for good news (a baby, a new home, a wedding, a new job)
+NONE  only if it is about a store policy (returns, warranty, delivery) or general knowledge unrelated to shopping
 
 Customer: do you have a bunk bed?
-Product: bunk bed
+PRODUCT: bunk bed
 
 Customer: How much is the MALM bed frame?
-Product: bed frame
+PRODUCT: bed frame
 
 Customer: do you sell outdoor heaters?
-Product: outdoor heater
+PRODUCT: outdoor heater
 
-Customer: can I return a chair after assembling it?
-Product: NONE
+Customer: I need a mirror for my hallway
+PRODUCT: mirror
+
+Customer: do you sell televisions?
+PRODUCT: television
+
+Customer: I sprained my ankle and can't walk much
+NEED: armchair with armrests, footstool
 
 Customer: my neck hurts when I work, what can help?
-Product: NONE
+NEED: office chair with headrest, desk
+
+Customer: I just moved into a tiny flat and have no space
+NEED: compact storage, sofa-bed, wall shelf
+
+Customer: I broke my arm last week
+NEED: armchair with armrests, side table, footstool
+
+Customer: I'm stressed after work and can't relax
+NEED: comfortable armchair, sofa, footstool
+
+Customer: I can't sleep well at night
+NEED: comfortable bed, bedside table
+
+Customer: we are expecting a baby soon
+HAPPY: crib, changing table, nursery storage
+
+Customer: we just bought our first house
+HAPPY: sofa, dining table, bed
+
+Customer: my kids keep leaving toys everywhere
+NEED: children's storage, toy boxes
+
+Customer: can I return a chair after assembling it?
+NONE
 
 Customer: what does the warranty cover?
-Product: NONE"""
+NONE
+
+Customer: who is the prime minister?
+NONE"""
 
 UNAVAILABLE_TASK = ("Task: the store does NOT sell {item}; the customer has already been told. "
                     "Start your reply with \"Here is something close you might like:\" and suggest 1 or 2 products from the context "
                     "that could do a similar job, as a numbered list (bold name – ₹ price – benefit). Do not claim they do what {item} does. "
                     "If nothing in the context is a sensible substitute, only say which kinds of furniture the store does have.")
+
+NEED_TASK = ("Task: the customer told you about their situation. {opening} "
+             "Then suggest up to 3 products from the context that could make them more comfortable, and for each explain "
+             "in one sentence how it helps in their situation. Comfort level only: no medical advice or promises.")
 
 _client = None
 
@@ -103,6 +145,16 @@ NOT_PRODUCTS = {"none", "pain", "ache", "hurt", "relief", "comfort", "support", 
                 "refund", "window", "policy", "delivery", "price", "cost", "order", "assembly", "furniture", "product"}
 
 
+# Body parts and medical items that are also furniture part names ("Leg", "Arm"); dropped from need searches.
+NOT_FURNITURE = {"leg", "legs", "arm", "arms", "foot", "feet", "hand", "hands", "knee", "ankle", "wrist", "neck",
+                 "brace", "cast", "crutch", "crutches", "bandage", "splint", "support", "rest"}
+
+
+# Spare parts ("STOCKSUND - Legs for armchair") are no help to someone describing a need.
+PART = re.compile(r"(legs?|supporting leg|armrest|backrest|back rest|cover|slipcover|knob|handle|door|drawer|shelf|"
+                  r"hinge|frame|cushion cover|glass door|plinth|rail)\b", re.I)
+
+
 @lru_cache(maxsize=1)
 def catalogue_words() -> frozenset[str]:
     """Every word in product names and categories: what kinds of product the store has."""
@@ -115,40 +167,63 @@ def in_catalogue(word: str) -> bool:
     return any(w in words for w in (word, word + "s", word.removesuffix("s"), word.removesuffix("es")))
 
 
-def missing_item(question: str) -> str | None:
-    """The kind of product asked for, if the store has nothing of that kind; else None.
+def route(question: str) -> tuple[str, str]:
+    """('product', kind) | ('need' or 'happy', furniture search text) | ('none', '').
 
-    The LLM only names the product (a 1.7b model can't judge stock reliably).
-    Python decides: the product is missing when its main word is in no product name or category.
+    The LLM only labels the message (temperature 0); Python decides what to do with it.
     """
     # Instructions in the system message: in one user message the model echoes "/no_think" instead of answering.
-    reply = llm([{"role": "system", "content": EXTRACT}, {"role": "user", "content": f"Customer: {question}\nProduct:"}],
+    reply = llm([{"role": "system", "content": ROUTE}, {"role": "user", "content": f"Customer: {question}"}],
                 temperature=0)
-    kind = (reply.splitlines() or ["none"])[0].lower().removeprefix("product:").strip(" ./*\"'")
+    line = (reply.splitlines() or ["NONE"])[0].strip(" *")
+    label, _, rest = line.partition(":")
+    label, rest = label.strip().lower(), rest.strip(" ./*\"'").lower()
+    if label in ("product", "need", "happy") and rest and rest != "none":
+        return label, rest
+    if not rest and label and label != "none":  # the model often drops the "PRODUCT:" label: "desk lamp"
+        return "product", label.strip(" ./*\"'")
+    return "none", ""
+
+
+def is_missing(kind: str) -> bool:
+    """True when the store has nothing of this kind: its main word is in no product name or category."""
     head = re.findall(r"[a-z]+", re.split(r"\b(?:with|for|in|that|which)\b", kind)[0])  # "bunk bed with a slide" -> bunk, bed
     if not head or NOT_PRODUCTS & set(re.findall(r"[a-z]+", kind)):
-        return None
-    return None if in_catalogue(head[-1]) else kind
+        return False
+    return not in_catalogue(head[-1])
 
 
 def answer(question: str, extra_context: str = "") -> dict:
     """Returns {text, sources, missing}. extra_context carries computed facts such as a warranty check."""
     hits = search(question)
-    if hits[0]["score"] < MIN_SCORE and not extra_context:
-        return {"text": IDK, "sources": [], "missing": None}
 
     # Policy question (a policy section beats every product): give the model only policies,
     # otherwise it lists loosely matching products ("return window" -> a window table).
     best_rule = max((h["score"] for h in hits if h["kind"] == "rule"), default=0)
     policy = best_rule >= max(h["score"] for h in hits if h["kind"] == "product") and not extra_context
+    label, detail = ("none", "") if policy or extra_context else route(question)
+
+    if label in ("need", "happy"):
+        # Search for the furniture that helps, not the words of the problem ("my leg is broken" -> table legs).
+        query = " ".join(w for w in re.findall(r"[a-z'-]+", detail) if w not in NOT_FURNITURE) or detail
+        hits = [h for h in search(query, k=20) if not PART.match(h.get("name", "").partition(" - ")[2])][:6]
+    elif hits[0]["score"] < MIN_SCORE and not extra_context:
+        return {"text": IDK, "sources": [], "missing": None}
     if policy:
         hits = [h for h in hits if h["kind"] == "rule"]
+
+    missing = detail if label == "product" and is_missing(detail) else None
+    task = ""
+    if missing:
+        task = UNAVAILABLE_TASK.format(item=missing) + "\n"
+    elif label == "need":
+        task = NEED_TASK.format(opening="Start with one short, warm sentence of sympathy in your own words about exactly what they said.") + "\n"
+    elif label == "happy":
+        task = NEED_TASK.format(opening="Start by congratulating them warmly in your own words on exactly what they said.") + "\n"
 
     context = "\n".join(f"[{h['source']}] {h['text']}" for h in hits)
     if extra_context:
         context += "\n" + extra_context
-    missing = None if policy else missing_item(question)
-    task = UNAVAILABLE_TASK.format(item=missing) + "\n" if missing else ""
     text = llm([
         {"role": "system", "content": SYSTEM + (POLICY_FORMAT if policy or extra_context else PRODUCT_FORMAT)},
         {"role": "user", "content": f"Context:\n{context}\n\n{task}Customer: {question}"},
@@ -162,8 +237,7 @@ def answer(question: str, extra_context: str = "") -> dict:
 
 
 if __name__ == "__main__":
-    for q in ["How much is the NORDVIKEN bar table?", "Can I return an assembled chair?",
-              "Do you sell desk lamps?", "Do you have a coffee table?", "Do you sell pianos?",
-              "What is the capital of France?"]:
+    for q in ["my leg is broken, suggest me something", "I have back pain from sitting all day",
+              "Do you sell desk lamps?", "Do you have a coffee table?", "What is the capital of France?"]:
         r = answer(q)
-        print(f"\n> {q}  (best score {search(q)[0]['score']:.2f})\n{r['text']}\nmissing={r['missing']}")
+        print(f"\n> {q}\n{r['text']}\nmissing={r['missing']}")
