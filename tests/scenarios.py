@@ -46,7 +46,7 @@ SCENARIOS = [
     # complaint: empathy, then policy
     ("the chair I bought arrived broken and I'm really upset", "answer", ["sorry", "!₹"]),
     # memory: the earlier message explains the new one
-    ("I need something for my room", "answer", ["sorry", "₹", "!- Leg"], {"history": ["my leg is broken"]}),
+    ("I need something for my room", "answer", ["₹", "!- Leg", "!sorry"], {"history": ["my leg is broken"]}),
     # buying: details + next step; ask which one when several were listed
     ("HATTEFJÄLL office chair, I would like to buy this, tell me more", "answer",
      ["HATTEFJÄLL", "Warranty: 60 months", "proceed", "!sorry"]),
@@ -102,6 +102,10 @@ SCENARIOS = [
     ("who are you?", "answer", ["!₹"]),
     ("write me a poem about the sea", "answer", ["only help", "!₹"]),
     ("ok I'll take it", "answer", ["Price: ₹", "proceed"], {"shown": "POÄNG rocking-chair", "n": 1}),
+    # from a real chat: "1 st" typed with a space, and no second "sorry" on a follow-up
+    ("i want to take 1 st chair and this 1st chair", "answer", ["Price: ₹", "Product page"],
+     {"history": ["i have broken arm, suggest me something", "Show me cafe furniture"], "shown": "cafe chair"}),
+    ("Show me cafe furniture", "answer", ["₹", "!sorry"], {"history": ["i have broken arm, suggest me something"]}),
 ]
 
 

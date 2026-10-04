@@ -315,8 +315,14 @@ def is_missing(kind: str) -> bool:
 
 # Buying words right after the bot listed products. The small model often reads "ok I'll get that" as the old need again.
 BUY = re.compile(r"\b(i'?ll (take|get|buy|have)|i ?will (take|get|buy)|(buy|take|get|want) (it|this|that|this one|that one)|"
-                 r"(that|this|the (first|second|third)) one|add (it|this|that)|(number|option|#)\s*[1-3])\b"
+                 r"(that|this|the (first|second|third)) one|add (it|this|that)|(number|option|#)\s*[1-3]|"
+                 r"(take|get|buy|want|choose|pick|like)\b[^.?!]{0,20}\b(first|second|third|1st|2nd|3rd))\b"
                  r"|^\s*[1-3]\s*\.?\s*$", re.I)  # or just the number from the list
+
+
+def ordinals(text: str) -> str:
+    """Join "1 st" into "1st", as customers type it both ways."""
+    return re.sub(r"\b([1-3])\s+(st|nd|rd)\b", r"\1\2", text, flags=re.I)
 ORDINAL = re.compile(r"\b(first|1st|second|2nd|third|3rd)\b|(?:number|no\.?|#|option)\s*([1-3])\b|^\s*([1-3])\s*\.?\s*$")
 
 PURCHASE_TASK = ("Task: the customer wants to buy {name}. In 2 or 3 warm sentences say it is a good choice, "
@@ -331,7 +337,7 @@ def plain(s: str) -> str:
 
 def pick_product(question: str, shown: list[dict]) -> dict | None:
     """The one product the customer means: named (suggested earlier first), "the second one", or the only one shown."""
-    q = plain(question)
+    q = plain(ordinals(question))
     for h in [*shown, *(h for h in search(question, k=10) if h["kind"] == "product")]:
         brand = plain(h["name"].partition(" - ")[0])
         if brand and re.search(rf"\b{re.escape(brand)}\b", q):
@@ -358,6 +364,8 @@ def purchase_reply(question: str, product: dict, about: str, on_token=None) -> s
         facts.append(f"- Good for: {product['good_for'].replace('-', ' ')}")
     if product.get("goes_with"):
         facts.append(f"- Goes well with: {product['goes_with']}")
+    if product.get("link"):
+        facts.append(f"- Product page: [{product['name'].partition(' - ')[0]}]({product['link']})")
     return (f"{intro}\n\n**{product['name']}**\n" + "\n".join(facts)
             + "\n\nHow would you like to proceed? Pick an option below.")
 
@@ -365,6 +373,24 @@ def purchase_reply(question: str, product: dict, about: str, on_token=None) -> s
 SYMPATHY = "Start with one short, warm sentence of sympathy in your own words about exactly what they said."
 CONGRATS = "Start by congratulating them warmly in your own words on exactly what they said."
 ACKNOWLEDGE = "Start with one short sentence showing you understood their situation, in your own words."
+FOLLOW_UP = "You already showed sympathy earlier, so do not say sorry again: start straight with the products."
+
+
+def said_now(problem: str, question: str) -> bool:
+    """True when the current message itself describes the problem, not only an earlier one."""
+    stems = {w[:5] for w in re.findall(r"[a-z]+", problem.lower()) if len(w) > 3}  # "stress" matches "stressed"
+    return not stems or bool(stems & {w[:5] for w in re.findall(r"[a-z]+", question.lower())})
+
+
+def distinct(hits) -> list[dict]:
+    """Drop repeats: the catalogue lists some products twice (same name and price, different item id)."""
+    seen, out = set(), []
+    for h in hits:
+        key = (h.get("name") or h["source"], h.get("price"))
+        if key not in seen:
+            seen.add(key)
+            out.append(h)
+    return out
 
 
 def answer(question: str, extra_context: str = "", history: list[str] = (), shown: list[dict] = (),
@@ -391,7 +417,7 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
     ]))
     about = f"What the customer needs: {about}\n" if about else ""
 
-    if intent == "PURCHASE" or shown and BUY.search(question):
+    if intent == "PURCHASE" or shown and BUY.search(ordinals(question)):
         product = pick_product(question, list(shown))
         if product:
             return {"text": purchase_reply(question, product, about, on_token), "sources": [product], "missing": None,
@@ -429,7 +455,8 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
         # No furniture named: search what they need ("a sleep-friendly room for daytime rest").
         detail = " ".join(u["furniture"]) or u["meaning"].lower() or question.lower()
         query = " ".join(w for w in re.findall(r"[a-z'-]+", detail) if w not in NOT_FURNITURE) or detail
-        hits = [h for h in search(query, k=20) if not PART.match(h.get("name", "").partition(" - ")[2])][:MAX_CONTEXT]
+        hits = distinct(h for h in search(query, k=20) if not PART.match(h.get("name", "").partition(" - ")[2]))
+        hits = hits[:MAX_CONTEXT]
     elif hits[0]["score"] < MIN_SCORE and not extra_context:
         return {"text": IDK, "sources": [], "missing": None, "understanding": u}
     if policy:
@@ -437,11 +464,15 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
         if intent == "COMPLAINT":  # other policies (expiry) led the small model to invent a "lifetime guarantee"
             hits = [h for h in hits if h["source"].startswith(("warranty.md", "returns.md"))] or hits
     elif not extra_context:
-        hits = hits[:MAX_CONTEXT]
+        hits = distinct(hits)[:MAX_CONTEXT]
 
     item = u["item"]
     missing = item if intent.startswith("PRODUCT") and not policy and item and is_missing(item) else None
-    if need:
+    # Sympathy or congratulations once: when the situation only comes from earlier messages, it was already said.
+    follow_up = bool(history) and bool(u["problem"]) and not said_now(u["problem"], question)
+    if follow_up:
+        opening = FOLLOW_UP if need else ""
+    elif need:
         opening = {"positive": CONGRATS, "negative": SYMPATHY}.get(u["sentiment"], ACKNOWLEDGE)
     else:
         opening = SYMPATHY if u["sentiment"] == "negative" else ""
@@ -469,6 +500,8 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
         text = NOT_AVAILABLE.format(item=missing) + "\n\n" + text
         log_request(missing, question)
     if not policy and not extra_context and re.search(r"^1\. \*\*", text, re.M):
+        # The model's own closing offer ("Let me know if...") would repeat ours.
+        text = re.sub(r"\n+(let me know|feel free|would you like|if you)[^\n]*$", "", text, flags=re.I).rstrip()
         text += "\n\n" + NEXT_STEP
     return {"text": text, "sources": hits, "missing": missing, "understanding": u}
 
@@ -486,6 +519,11 @@ if __name__ == "__main__":
     assert not any(BUY.search(q) for q in ["do you have a desk?", "my neck hurts", "show me other chairs",
                                            "tell me more about returns", "I have 2 kids"])
     assert pick_product("2", shown) is shown[1]
+    assert BUY.search(ordinals("i want to take 1 st chair and this 1st chair")) and not BUY.search("I want 2 chairs")
+    assert pick_product(ordinals("i want to take 1 st chair"), shown) is shown[0]
+    assert said_now("broken arm", "i have broken arm") and not said_now("broken leg", "I need something for my room")
+    assert said_now("stress after work", "I'm feeling stressed") and said_now("", "anything")
+    assert len(distinct([{"name": "A", "price": 1, "source": "x"}, {"name": "A", "price": 1, "source": "y"}])) == 1
     assert head_noun("Office chair with armrests") == "chair" and head_noun("Laptop table, 100x36 cm") == "table"
     assert is_broken_furniture("the leg of my new table snapped") and is_broken_furniture("the drawer of my wardrobe broke")
     assert not any(is_broken_furniture(q) for q in ["my leg is broken", "I broke my arm", "my house got flooded"])
