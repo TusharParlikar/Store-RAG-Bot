@@ -9,5 +9,5 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen3:1.7b")
 LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "none")  # "none" turns Qwen3 thinking off
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.45"))
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.8"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
