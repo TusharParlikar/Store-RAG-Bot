@@ -317,7 +317,9 @@ def is_missing(kind: str) -> bool:
 BUY = re.compile(r"\b(i'?ll (take|get|buy|have)|i ?will (take|get|buy)|(buy|take|get|want) (it|this|that|this one|that one)|"
                  r"(that|this|the (first|second|third)) one|add (it|this|that)|(number|option|#)\s*[1-3]|"
                  r"(take|get|buy|want|choose|pick|like)\b[^.?!]{0,20}\b(first|second|third|1st|2nd|3rd))\b"
-                 r"|^\s*[1-3]\s*\.?\s*$", re.I)  # or just the number from the list
+                 r"|^\s*[1-3]\s*\.?\s*$"  # or just the number from the list
+                 r"|^\s*(the\s+)?(first|second|third|1st|2nd|3rd)(\s+one)?\s*[.!]?\s*$"  # or "1st", "the second one"
+                 r"|\b(the\s+)?(cheapest|least expensive|most expensive|priciest)(\s+one)?\b|\b(the last|last one)\b", re.I)
 
 
 def ordinals(text: str) -> str:
@@ -342,6 +344,12 @@ def pick_product(question: str, shown: list[dict]) -> dict | None:
         brand = plain(h["name"].partition(" - ")[0])
         if brand and re.search(rf"\b{re.escape(brand)}\b", q):
             return h
+    if shown and re.search(r"\b(cheapest|least expensive|lowest price)\b", q):
+        return min(shown, key=lambda h: h["price"])
+    if shown and re.search(r"\b(most expensive|priciest|best quality)\b", q):
+        return max(shown, key=lambda h: h["price"])
+    if shown and re.search(r"\b(the last|last one)\b", q):
+        return shown[-1]
     m = ORDINAL.search(q)
     if m and shown:
         i = ("first", "1st", "second", "2nd", "third", "3rd").index(m[1]) // 2 if m[1] else int(m[2] or m[3]) - 1
@@ -380,6 +388,51 @@ def said_now(problem: str, question: str) -> bool:
     """True when the current message itself describes the problem, not only an earlier one."""
     stems = {w[:5] for w in re.findall(r"[a-z]+", problem.lower()) if len(w) > 3}  # "stress" matches "stressed"
     return not stems or bool(stems & {w[:5] for w in re.findall(r"[a-z]+", question.lower())})
+
+
+# Product names that are also everyday words or first names: they count only when typed in capitals ("LACK table"),
+# so "I lack space" or "hallo" do not pull in products.
+COMMON_WORD_NAMES = {"lack", "hallo", "urban", "utter", "harry", "erik", "glenn", "len", "hol", "pax", "stig",
+                     "jules", "micke", "nisse", "cilla", "terje", "bror", "rast", "olov", "olaus"}
+
+
+def product_names(h: dict) -> list[str]:
+    """Plain product names of a chunk: "STENSELE / RÖNNINGE - Table" -> ["stensele", "ronninge"]."""
+    return [plain(n.strip()) for n in h["name"].partition(" - ")[0].split("/") if n.strip()]
+
+
+@lru_cache(maxsize=1)
+def catalogue_by_name() -> dict[str, list[dict]]:
+    out = {}
+    for c in product_chunks():
+        for n in product_names(c):
+            out.setdefault(n, []).append(c)
+    return out
+
+
+def named_products(question: str) -> list[dict]:
+    """Products the customer names ("MALM bed"): best search matches first, at most 3 per name and 6 in all."""
+    q = plain(question)
+    caps = unicodedata.normalize("NFKD", question).encode("ascii", "ignore").decode()
+    names = [n for n in catalogue_by_name() if re.search(rf"\b{re.escape(n)}\b", q)
+             and (n not in COMMON_WORD_NAMES or re.search(rf"\b{re.escape(n.upper())}\b", caps))]
+    if not names:
+        return []
+    ranked = [h for h in search(question, k=20) if h["kind"] == "product"]
+    out, seen = [], set()
+    for n in names:
+        picked = 0
+        for h in [h for h in ranked if n in product_names(h)] + catalogue_by_name()[n]:
+            if picked < 3 and h["name"] not in seen:  # colour variants share a name: one link each
+                seen.add(h["name"])
+                out.append(h)
+                picked += 1
+    return out[:6]
+
+
+def product_links(products: list[dict]) -> str:
+    rows = [f"- [{h['name']}]({h['link']}) – {inr(h['price'])}" for h in products if h.get("link")]
+    return "\n\n**Product pages:**\n" + "\n".join(rows) if rows else ""
 
 
 def distinct(hits) -> list[dict]:
@@ -440,6 +493,7 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
     if intent == "GENERAL_QUESTION":
         return {"text": IDK, "sources": [], "missing": None, "understanding": u}
 
+    named = named_products(question)  # products the customer mentions by name get direct links
     hits = search(question)
     # Policy question: give the model only policies, otherwise it lists loosely matching products
     # ("return window" -> a window table). A policy section beating every product also counts.
@@ -457,7 +511,7 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
         query = " ".join(w for w in re.findall(r"[a-z'-]+", detail) if w not in NOT_FURNITURE) or detail
         hits = distinct(h for h in search(query, k=20) if not PART.match(h.get("name", "").partition(" - ")[2]))
         hits = hits[:MAX_CONTEXT]
-    elif hits[0]["score"] < MIN_SCORE and not extra_context:
+    elif hits[0]["score"] < MIN_SCORE and not extra_context and not named:
         return {"text": IDK, "sources": [], "missing": None, "understanding": u}
     if policy:
         hits = [h for h in hits if h["kind"] == "rule"]
@@ -502,7 +556,9 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
     if not policy and not extra_context and re.search(r"^1\. \*\*", text, re.M):
         # The model's own closing offer ("Let me know if...") would repeat ours.
         text = re.sub(r"\n+(let me know|feel free|would you like|if you)[^\n]*$", "", text, flags=re.I).rstrip()
-        text += "\n\n" + NEXT_STEP
+        text += product_links(named) + "\n\n" + NEXT_STEP
+    else:
+        text += product_links(named)
     return {"text": text, "sources": hits, "missing": missing, "understanding": u}
 
 
@@ -520,6 +576,15 @@ if __name__ == "__main__":
                                            "tell me more about returns", "I have 2 kids"])
     assert pick_product("2", shown) is shown[1]
     assert BUY.search(ordinals("i want to take 1 st chair and this 1st chair")) and not BUY.search("I want 2 chairs")
+    assert all(BUY.search(q) for q in ["1st", "the second one", "third."]) and not BUY.search("first time buying a sofa")
+    priced = [{"name": "A - x", "price": 30}, {"name": "B - y", "price": 10}, {"name": "C - z", "price": 20}]
+    assert pick_product("the cheapest one please", priced)["price"] == 10
+    assert pick_product("most expensive", priced)["price"] == 30 and pick_product("the last one", priced) is priced[2]
+    assert BUY.search("the cheapest one please") and BUY.search("actually show me the last one")
+    assert not BUY.search("I bought a sofa last year")
+    assert {n for h in named_products("How much is the MALM bed?") for n in product_names(h)} >= {"malm"}
+    assert named_products("I lack space at home") == [] and named_products("hallo") == []
+    assert any("lack" in product_names(h) for h in named_products("What does the LACK coffee table cost?"))
     assert pick_product(ordinals("i want to take 1 st chair"), shown) is shown[0]
     assert said_now("broken arm", "i have broken arm") and not said_now("broken leg", "I need something for my room")
     assert said_now("stress after work", "I'm feeling stressed") and said_now("", "anything")
