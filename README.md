@@ -41,6 +41,43 @@ sequenceDiagram
 
 The model never decides on its own. It describes the message (call 1) and puts retrieved facts into words (call 2). Python does the routing, the stock check, the maths and the clean-up in between.
 
+### The same example, step by step
+
+**1. Understand (LLM call 1).** [gen/answer.py](gen/answer.py) `understand()` sends the message, with the last 3 earlier messages, to the model at temperature 0 in JSON mode, with few-shot examples. For "my leg is broken" it returns:
+
+```json
+{"intent": "PRODUCT_RECOMMENDATION", "item": "", "problem": "broken leg", "emotion": "pain",
+ "sentiment": "negative", "furniture": ["recliner", "armchair with armrests", "footstool"],
+ "constraints": [], "meaning": "Needs comfortable seating that supports the leg while recovering."}
+```
+
+**2. Route (Python).** `answer()` checks the labels first. "The leg of my table snapped" is about furniture, so it becomes a complaint, not an injury. Then it picks a path:
+
+| Intent | Path |
+|---|---|
+| `PRODUCT_RECOMMENDATION` | Search the helpful `furniture`, not the problem words ("leg" would find table legs). Spare parts are dropped. |
+| `PRODUCT_SEARCH`, `PRODUCT_COMPARISON` | Search the question. Check whether the `item` is sold. |
+| `PURCHASE` | Find the product the customer means. Show its exact facts and next-step buttons. |
+| `STORE_INFORMATION`, `ORDER_SUPPORT`, `COMPLAINT` | Use policy sections only. |
+| `CASUAL_CONVERSATION` | A short friendly reply, with no search and no store facts. |
+| `GENERAL_QUESTION` | "I don't know", with no second LLM call. |
+
+**3. Retrieve.** [rag/index.py](rag/index.py) `search()` embeds the text with `all-MiniLM-L6-v2` and returns the top 5 chunks plus the top 2 policy sections, each with a cosine score. Policies are searched separately so about 3,000 products cannot crowd them out. If the best score is below 0.30, the reply is "I don't know" and the model is not called again.
+
+**4. Check stock.** `is_missing()` compares the main noun of the request with the main noun of every product type. A "Laptop table" is a table, so the store does not sell laptops.
+
+**5. Answer (LLM call 2).** The prompt holds the store rules (answer only from the context, quote prices exactly, no medical promises, never invent discounts or deadlines), the retrieved chunks, what the customer needs, and a task such as "start with one warm sentence of sympathy". Temperature is 0.8 for products and 0.3 for policy answers.
+
+**6. Clean up and show.** Python adds the "not available" line and logs the request to `data/requests/requests.csv`, removes any copied template text, and ends every product list with "Would you like one of these? Tell me the number". [app/main.py](app/main.py) shows the reply, a "Request noted" note, next-step buttons after a purchase choice, and a Sources panel with scores, links and prices.
+
+The reply the customer sees (from a real run, shortened):
+
+> Hello! I'm sorry to hear you're feeling pain, especially with your leg. Here are some products that could help:
+> 1. **INGATORP - Chair with armrests** – ₹10,458. This chair provides support and comfort for long hours, which could help you stay seated while recovering.
+> 2. **REMSTA - Armchair** – ₹18,682. ...
+>
+> Would you like one of these? Tell me the number and I'll share the full details.
+
 ## Stack
 
 | Part | Choice |
