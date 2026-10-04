@@ -3,6 +3,7 @@
 One product row = one chunk. One policy section (## heading) = one chunk.
 Run `python -m nlp.chunks` to print a few chunks.
 """
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -13,12 +14,20 @@ import config
 DATA = Path(__file__).resolve().parent.parent / "data"
 
 
+def inr(amount: float) -> str:
+    """Indian rupee format with lakh grouping: 123456 -> '₹1,23,456'."""
+    s = str(round(amount))
+    if len(s) > 3:
+        s = re.sub(r"(\d)(?=(\d{2})+$)", r"\1,", s[:-3]) + "," + s[-3:]
+    return "₹" + s
+
+
 def product_chunks() -> list[dict]:
     df = pd.read_csv(DATA / "products" / "products.csv", dtype={"shelf_life": str}).fillna("")
     chunks = []
     for r in df.itertuples():
         text = (
-            f"{r.name}. Category: {r.category}. Price: {r.price:g} SAR. "
+            f"{r.name}. Category: {r.category}. Price: {inr(r.price)}. "
             f"Warranty: {r.warranty_months} months. Benefit: {r.benefit}. "
             f"Good for: {r.good_for}. Goes with: {r.goes_with}."
         )
@@ -60,6 +69,7 @@ def embed(texts: list[str]):
 
 
 if __name__ == "__main__":
+    assert [inr(x) for x in (99, 1000, 23379, 123456, 1234567)] == ["₹99", "₹1,000", "₹23,379", "₹1,23,456", "₹12,34,567"]
     chunks = load_chunks()
     rules = [c for c in chunks if c["kind"] == "rule"]
     print(f"{len(chunks)} chunks ({len(rules)} rule, {len(chunks) - len(rules)} product)\n")
