@@ -9,6 +9,7 @@ import streamlit as st
 
 from gen.answer import answer
 from gen.warranty import describe
+from nlp.chunks import inr
 from rag.index import search
 
 st.set_page_config(page_title="Nest & Oak Assistant", page_icon="🪑", layout="centered")
@@ -62,7 +63,7 @@ def show_extras(msg: dict):
             for s in msg["sources"]:
                 label = f'{s["source"]} · {s["score"]:.2f}'
                 if s.get("link"):
-                    st.markdown(f'<span class="src">{label}</span> [{s["name"]}]({s["link"]}) — {s["price"]:g} SAR',
+                    st.markdown(f'<span class="src">{label}</span> [{s["name"]}]({s["link"]}) — {inr(s["price"])}',
                                 unsafe_allow_html=True)
                 else:
                     st.markdown(f'<span class="src">{label}</span>', unsafe_allow_html=True)
