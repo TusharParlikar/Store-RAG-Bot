@@ -1,7 +1,8 @@
 """Turn the downloaded IKEA dataset (data/raw/ikea.csv) into data/products/products.csv.
 
 Source: TidyTuesday 2020-11-03 (IKEA Saudi Arabia scrape, also on Kaggle as
-"IKEA SA Furniture Web Scraping"). Prices are in SAR.
+"IKEA SA Furniture Web Scraping"). Raw prices are in SAR; they are converted to INR
+at SAR_TO_INR and rounded to whole rupees. The original is kept in price_sar.
 
 The raw data has name, category, price and description. The columns project.md
 needs but the dataset lacks (warranty_months, benefit, good_for, goes_with) are
@@ -11,6 +12,9 @@ import re
 from pathlib import Path
 
 import pandas as pd
+
+# 1 SAR in rupees. SAR is pegged at 3.75 per USD, so this is about USD/INR / 3.75. Update and rerun to reprice.
+SAR_TO_INR = 23.5
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw" / "ikea.csv"
@@ -56,7 +60,8 @@ def main():
         "item_id": df["item_id"],
         "name": df["name"].map(clean) + " - " + df["short_description"].map(clean),
         "category": df["category"],
-        "price": df["price"],
+        "price": (df["price"] * SAR_TO_INR).round().astype(int),  # INR
+        "price_sar": df["price"],
         "warranty_months": info.str[0],
         "shelf_life": "",  # no furniture in this dataset expires
         "benefit": info.str[1],
