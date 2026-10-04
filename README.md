@@ -160,21 +160,15 @@ python -m tests.scenarios 3     # 3 rounds each, to catch flaky model output
 
 The scenarios cover prices, policies, needs and feelings, products not sold, off-topic questions, chit-chat, complaints, memory, buying, and two fresh sets written after the prompts were tuned. The last full run with `qwen3:1.7b` passed 65 of 72.
 
+## Dataset
+
+Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from [TidyTuesday 2020-11-03](https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-11-03) (also on Kaggle as "IKEA SA Furniture Web Scraping"). It has 3,694 rows, 2,962 unique products and 17 categories. Prices are converted from SAR to INR at `SAR_TO_INR` (23.5); the original is kept in `price_sar`. The dataset has no warranty, benefit or pairing columns, so these are set per category in `CATEGORY_INFO` in [nlp/prepare_products.py](nlp/prepare_products.py). The policies in [data/rules/](data/rules/) are demo store policies.
+
 ## Stack
 
 | Part | Choice |
 |---|---|
-| Frontend | Streamlit |
-| LLM | `qwen3:1.7b` on Ollama (local), `qwen/qwen3-32b` on Groq free tier (deployed). Same code, switched by `.env`. |
-| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` (CPU) |
-| Vector search | FAISS |
-| Config | `.env` read by [config.py](config.py) |
-
-## Dataset
-
-Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from TidyTuesday 2020-11-03 (also on Kaggle as "IKEA SA Furniture Web Scraping"). 3,694 rows, 2,962 unique products, 17 categories. Raw prices are in SAR; [nlp/prepare_products.py](nlp/prepare_products.py) converts them to INR at `SAR_TO_INR` (23.5) and keeps the original in `price_sar`.
-
-- Raw file: [data/raw/ikea.csv](data/raw/ikea.csv)
-- Source: https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-11-03
-
-The dataset has name, category, price and description. The extra columns project.md needs (`warranty_months`, `benefit`, `good_for`, `goes_with`) are set per category in `CATEGORY_INFO` in [nlp/prepare_products.py](nlp/prepare_products.py). The policy files in [data/rules/](data/rules/) are demo store policies.
+| Chat UI | Streamlit |
+| LLM | `qwen3:1.7b` on Ollama (local), `qwen/qwen3-32b` on Groq free tier (deployed), through the OpenAI client |
+| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` on CPU |
+| Vector search | FAISS (inner product on unit vectors = cosine) |
