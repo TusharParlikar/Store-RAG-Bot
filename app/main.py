@@ -98,7 +98,8 @@ if prompt:
     with st.chat_message("assistant", avatar="🪑"):
         with st.spinner("Thinking..."):
             try:
-                r = answer(prompt, extra)
+                earlier = [m["content"] for m in st.session_state.messages[:-1] if m["role"] == "user"]
+                r = answer(prompt, extra, history=earlier)
             except Exception as e:  # LLM down or bad key: show it instead of a stack trace
                 r = {"text": f"Sorry, I can't reach the language model right now ({type(e).__name__}).",
                      "sources": [], "missing": None}
