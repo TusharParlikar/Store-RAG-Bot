@@ -106,6 +106,10 @@ SCENARIOS = [
     ("i want to take 1 st chair and this 1st chair", "answer", ["Price: ₹", "Product page"],
      {"history": ["i have broken arm, suggest me something", "Show me cafe furniture"], "shown": "cafe chair"}),
     ("Show me cafe furniture", "answer", ["₹", "!sorry"], {"history": ["i have broken arm, suggest me something"]}),
+    ("1st", "answer", ["Price: ₹", "Product page"], {"shown": "office chair"}),
+    # products named in the message get direct links; everyday words do not
+    ("How much is the MALM bed?", "answer", ["MALM", "Product pages:", "https://"]),
+    ("I lack space in my bedroom", "answer", ["₹", "!Product pages:"]),
 ]
 
 
