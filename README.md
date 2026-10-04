@@ -99,6 +99,25 @@ flowchart LR
     EMB --> IDX[(index/ FAISS)]
 ```
 
+## Quick start
+
+Prerequisites: Python 3.11 or 3.12 (`faiss-cpu` wheels may lag on newer versions) and [Ollama](https://ollama.com).
+
+```bash
+git clone https://github.com/TusharParlikar/Store-RAG-Bot.git
+cd Store-RAG-Bot
+python -m venv .venv
+.venv\Scripts\activate          # Windows; use source .venv/bin/activate on macOS/Linux
+pip install -r requirements.txt
+ollama pull qwen3:1.7b
+cp .env.example .env            # defaults point at local Ollama
+streamlit run app/main.py
+```
+
+Open http://localhost:8501. The first start builds the FAISS index and downloads the embedding model, which takes a minute or two.
+
+To rebuild from the raw data: `python nlp/prepare_products.py`, then `python -m rag.index`.
+
 ## Stack
 
 | Part | Choice |
@@ -117,24 +136,6 @@ Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from TidyTue
 - Source: https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-11-03
 
 The dataset has name, category, price and description. The extra columns project.md needs (`warranty_months`, `benefit`, `good_for`, `goes_with`) are set per category in `CATEGORY_INFO` in [nlp/prepare_products.py](nlp/prepare_products.py). The policy files in [data/rules/](data/rules/) are demo store policies.
-
-## Run locally
-
-Use Python 3.11 or 3.12 (`faiss-cpu` wheels may lag on newer versions).
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate          # Windows; use source .venv/bin/activate on macOS/Linux
-pip install -r requirements.txt
-ollama pull qwen3:1.7b
-cp .env.example .env            # defaults point at local Ollama
-python nlp/prepare_products.py  # rebuild data/products/products.csv
-```
-
-```bash
-python -m rag.index             # build the FAISS index (also built automatically on first run)
-streamlit run app/main.py       # chat page at http://localhost:8501
-```
 
 ## Tests
 
