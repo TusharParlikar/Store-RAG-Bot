@@ -21,6 +21,10 @@ from rag.index import search
 # Picked by testing off-topic questions (see `python -m gen.answer`).
 MIN_SCORE = 0.30
 
+# Chunks sent to the answer call. It lists at most 3 products; on a laptop CPU every extra chunk
+# (~100 tokens) adds about 2 seconds of prompt reading.
+MAX_CONTEXT = 4
+
 IDK = "I don't know. Please contact the store and the team will be happy to help."
 
 # Said when a requested product is not in the data. Keep it true: no fake scarcity.
@@ -178,14 +182,29 @@ NEED_TASK = ("Task: the customer told you about their situation. {opening} "
 _client = None
 
 
-def llm(messages: list[dict], temperature: float = config.LLM_TEMPERATURE, json_mode: bool = False) -> str:
+def llm(messages: list[dict], temperature: float = config.LLM_TEMPERATURE, json_mode: bool = False,
+        on_token=None) -> str:
+    """One chat call. With on_token, the reply is streamed and on_token gets the text so far after each piece."""
     global _client
     _client = _client or OpenAI(base_url=config.LLM_BASE_URL, api_key=config.LLM_API_KEY)
+    extra = {}
+    if json_mode:
+        extra["response_format"] = {"type": "json_object"}
+    if config.LLM_KEEP_ALIVE:
+        extra["extra_body"] = {"keep_alive": config.LLM_KEEP_ALIVE}
     # reasoning_effort="none" stops Qwen3 thinking (about 30x faster); max_tokens stops runaway replies.
     out = _client.chat.completions.create(model=config.LLM_MODEL, messages=messages, temperature=temperature,
                                           max_tokens=400, reasoning_effort=config.LLM_REASONING_EFFORT,
-                                          **({"response_format": {"type": "json_object"}} if json_mode else {}))
-    text = re.sub(r"<think>.*?</think>", "", out.choices[0].message.content or "", flags=re.S)
+                                          stream=on_token is not None, **extra)
+    if on_token is None:
+        text = out.choices[0].message.content or ""
+    else:
+        text = ""
+        for chunk in out:
+            if chunk.choices and chunk.choices[0].delta.content:
+                text += chunk.choices[0].delta.content
+                on_token(text)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
     return re.sub(r"/(no_)?think", "", text, flags=re.I).strip()  # Ollama sometimes echoes Qwen3's switch
 
 
@@ -324,13 +343,13 @@ def pick_product(question: str, shown: list[dict]) -> dict | None:
     return shown[0] if len(shown) == 1 else None
 
 
-def purchase_reply(question: str, product: dict, about: str) -> str:
+def purchase_reply(question: str, product: dict, about: str, on_token=None) -> str:
     """Warm words from the LLM, then the exact facts from the data, then the next step."""
     intro = llm([
         {"role": "system", "content": SYSTEM + POLICY_FORMAT},
         {"role": "user", "content": f"Context:\n[{product['source']}] {product['text']}\n\n{about}"
                                     f"{PURCHASE_TASK.format(name=product['name'])}Customer: {question}"},
-    ])
+    ], on_token=on_token)
     months = product["warranty_months"]
     years = f" ({months // 12} years)" if months >= 12 and months % 12 == 0 else ""
     facts = [f"- Price: {inr(product['price'])}", f"- Warranty: {months} months{years}",
@@ -348,11 +367,13 @@ CONGRATS = "Start by congratulating them warmly in your own words on exactly wha
 ACKNOWLEDGE = "Start with one short sentence showing you understood their situation, in your own words."
 
 
-def answer(question: str, extra_context: str = "", history: list[str] = (), shown: list[dict] = ()) -> dict:
+def answer(question: str, extra_context: str = "", history: list[str] = (), shown: list[dict] = (),
+           on_token=None) -> dict:
     """Returns {text, sources, missing, understanding}, plus `product` when the customer picked one to buy.
 
     extra_context carries computed facts such as a warranty check; history is the customer's earlier messages;
     shown is the products in the bot's last reply, so "I'll take the second one" can be resolved.
+    on_token(text_so_far) is called while the reply is written, so the page can show it live.
     """
     u = parse_understanding("") if extra_context else understand(question, history)
     if u["intent"] in ("PRODUCT_RECOMMENDATION", "") and is_broken_furniture(question):
@@ -373,7 +394,7 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
     if intent == "PURCHASE" or shown and BUY.search(question):
         product = pick_product(question, list(shown))
         if product:
-            return {"text": purchase_reply(question, product, about), "sources": [product], "missing": None,
+            return {"text": purchase_reply(question, product, about, on_token), "sources": [product], "missing": None,
                     "understanding": u, "product": product}
         if shown:  # "I'll get that" after several suggestions: ask instead of guessing
             options = "\n".join(f"{i}. **{h['name']}** – {inr(h['price'])}" for i, h in enumerate(shown, 1))
@@ -382,6 +403,7 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
         intent = "PRODUCT_SEARCH"  # a kind of product, not a specific one: search as usual
 
     if intent == "CASUAL_CONVERSATION":  # chit-chat: no search, no store facts
+        # Not streamed: the poem check below runs on the whole reply, and chit-chat is short anyway.
         text = llm([{"role": "system", "content": CASUAL}, {"role": "user", "content": question}])
         if len(text) > 250 or text.count("\n") >= 2:  # chit-chat is 1 or 2 sentences; more is a poem or essay
             text = "I'd love to, but I can only help with our furniture store. " + CASUAL_NEXT_STEP
@@ -407,13 +429,15 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
         # No furniture named: search what they need ("a sleep-friendly room for daytime rest").
         detail = " ".join(u["furniture"]) or u["meaning"].lower() or question.lower()
         query = " ".join(w for w in re.findall(r"[a-z'-]+", detail) if w not in NOT_FURNITURE) or detail
-        hits = [h for h in search(query, k=20) if not PART.match(h.get("name", "").partition(" - ")[2])][:6]
+        hits = [h for h in search(query, k=20) if not PART.match(h.get("name", "").partition(" - ")[2])][:MAX_CONTEXT]
     elif hits[0]["score"] < MIN_SCORE and not extra_context:
         return {"text": IDK, "sources": [], "missing": None, "understanding": u}
     if policy:
         hits = [h for h in hits if h["kind"] == "rule"]
         if intent == "COMPLAINT":  # other policies (expiry) led the small model to invent a "lifetime guarantee"
             hits = [h for h in hits if h["source"].startswith(("warranty.md", "returns.md"))] or hits
+    elif not extra_context:
+        hits = hits[:MAX_CONTEXT]
 
     item = u["item"]
     missing = item if intent.startswith("PRODUCT") and not policy and item and is_missing(item) else None
@@ -436,7 +460,8 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
         {"role": "system", "content": SYSTEM + (POLICY_FORMAT if policy or extra_context else PRODUCT_FORMAT)},
         # Policy answers need only the facts: the understanding line made the small model say "I don't know".
         {"role": "user", "content": f"Context:\n{context}\n\n{'' if policy else about}{task}Customer: {question}"},
-    ], temperature=0.3 if policy or extra_context else config.LLM_TEMPERATURE)  # facts: stay close to the policy text
+    ], temperature=0.3 if policy or extra_context else config.LLM_TEMPERATURE,  # facts: stay close to the policy text
+        on_token=on_token)
     text = re.sub(r"What it is and why it suits them[.:]\s*", "", text)  # the small model sometimes copies the format example
     if missing:
         # Small models often repeat the "we don't sell it" line; drop that leading sentence.
