@@ -60,6 +60,7 @@ The model only describes the message. Python decides what happens next:
 |---|---|
 | `PRODUCT_SEARCH`, `PRODUCT_COMPARISON` | Search the question. The `item` is checked against the catalogue, see below. |
 | `PRODUCT_RECOMMENDATION` | Search for the `furniture` that helps, not the words of the problem (which would match table legs), and drop spare parts. |
+| `PURCHASE` | The customer picked one product: details and next steps, see below. |
 | `STORE_INFORMATION`, `ORDER_SUPPORT`, `COMPLAINT` | Policy sections only. |
 | `CASUAL_CONVERSATION` | A short friendly reply with no search and no store facts. |
 | `GENERAL_QUESTION` | "I don't know", without a second LLM call. |
@@ -67,6 +68,15 @@ The model only describes the message. Python decides what happens next:
 The opening of the reply follows the sentiment: sympathy for a problem or complaint, congratulations for good news ("a baby is coming"), and a short acknowledgement for a neutral situation. The answer step also receives the meaning, situation, feeling and limits, so it answers the reason behind the request, not only its words. If the JSON is broken, the message falls back to a plain search with the score cutoff.
 
 Benefits stay at comfort level: no medical advice or promises.
+
+### Customers who want to buy
+
+When a customer picks a product ("I'd like the HATTEFJÄLL chair, tell me more", "the second one", "ok I'll get that"), Python works out which product they mean. It checks names first (the products in the last reply come first), then words like "second" or "option 2". If only one product was listed, that one is picked. A buying phrase right after a list counts too, because the small model often reads "ok I'll get that" as the earlier need again.
+
+- **One product found:** a short, warm paragraph from the LLM, then the exact facts from the data (price, warranty, category, good for, goes well with). Under it are next-step buttons: Product page, What goes with it?, Warranty and returns, Similar options.
+- **Several listed, none named:** the bot asks which one, with a numbered list.
+
+The cart and saving the order come later (project.md steps 8 and 10).
 
 ### Products the store does not carry
 
