@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 
-from gen.answer import answer
+from gen.answer import answer, understand
 from gen.warranty import describe
 from nlp.chunks import inr
 from rag.index import search
@@ -33,9 +33,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-@st.cache_resource(show_spinner="Loading the store catalogue...")
+@st.cache_resource(show_spinner="Loading the store catalogue and waking the assistant...")
 def warm_up():
     search("chair", k=1)  # loads the embedding model and FAISS index once per server
+    try:  # loads the LLM and caches the long understanding prompt: the first customer then waits ~10s, not ~2 min
+        understand("hello")
+    except Exception:  # LLM down: the chat shows the error on the first message instead
+        pass
 
 
 warm_up()
@@ -114,6 +118,7 @@ if prompt:
             extra = describe(product["name"], purchase, product["warranty_months"])
 
     with st.chat_message("assistant", avatar="🪑"):
+        live = st.empty()  # the reply appears here word by word while the model writes it
         with st.spinner("Thinking..."):
             try:
                 earlier = [m["content"] for m in st.session_state.messages[:-1] if m["role"] == "user"]
@@ -121,12 +126,12 @@ if prompt:
                 # Only the products the reply actually listed, not every search hit behind it.
                 shown = [s for s in last_bot.get("sources", []) if s["kind"] == "product"
                          and s["name"] in last_bot["content"] and inr(s["price"]) in last_bot["content"]]
-                r = answer(prompt, extra, history=earlier, shown=shown)
+                r = answer(prompt, extra, history=earlier, shown=shown, on_token=lambda t: live.markdown(t + " ▌"))
             except Exception as e:  # LLM down or bad key: show it instead of a stack trace
                 r = {"text": f"Sorry, I can't reach the language model right now ({type(e).__name__}).",
                      "sources": [], "missing": None}
         reply = {"role": "assistant", "content": r["text"], "sources": r["sources"], "missing": r["missing"],
                  "product": r.get("product")}
-        st.markdown(reply["content"])
+        live.markdown(reply["content"])  # final text: adds the "not available" line and the next step
         show_extras(reply, str(len(st.session_state.messages)))
     st.session_state.messages.append(reply)
