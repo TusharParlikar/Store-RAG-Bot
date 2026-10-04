@@ -36,7 +36,8 @@ def product_chunks() -> list[dict]:
         chunks.append({"text": text, "source": f"products.csv #{r.item_id}", "kind": "product",
                        "item_id": int(r.item_id), "name": r.name, "price": float(r.price),
                        "warranty_months": int(r.warranty_months),
-                       "category": r.category, "link": r.link})
+                       "category": r.category, "link": r.link, "benefit": r.benefit,
+                       "good_for": r.good_for, "goes_with": r.goes_with})
     return chunks
 
 
