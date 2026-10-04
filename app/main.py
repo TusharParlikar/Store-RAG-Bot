@@ -62,7 +62,8 @@ if "messages" not in st.session_state:
 def show_next_steps(product: dict, key: str):
     """Buttons after a customer picks a product: each one sends a follow-up message, or opens the product page."""
     # The product type, not its name: a name would read as "buy this one" again.
-    kind = product["name"].partition(" - ")[2].lower() or product["category"].lower()
+    # Size dropped too: "bookcase, 120x30x237 cm" makes the warranty question look like a product search.
+    kind = product["name"].partition(" - ")[2].split(",")[0].lower() or product["category"].lower()
     steps = {"What goes with it?": f"Show me {product['goes_with'].split(';')[0].strip().lower()}",  # the product's words would find it again
              "Warranty and returns": f"What does the {product['warranty_months']}-month warranty on a {kind} cover, and can I return it?",
              "Similar options": f"Show me other {kind} options"}
@@ -119,17 +120,19 @@ if prompt:
 
     with st.chat_message("assistant", avatar="🪑"):
         live = st.empty()  # the reply appears here word by word while the model writes it
-        with st.spinner("Thinking..."):
-            try:
-                earlier = [m["content"] for m in st.session_state.messages[:-1] if m["role"] == "user"]
-                last_bot = next((m for m in reversed(st.session_state.messages) if m["role"] == "assistant"), {})
-                # Only the products the reply actually listed, not every search hit behind it.
-                shown = [s for s in last_bot.get("sources", []) if s["kind"] == "product"
-                         and s["name"] in last_bot["content"] and inr(s["price"]) in last_bot["content"]]
-                r = answer(prompt, extra, history=earlier, shown=shown, on_token=lambda t: live.markdown(t + " ▌"))
-            except Exception as e:  # LLM down or bad key: show it instead of a stack trace
-                r = {"text": f"Sorry, I can't reach the language model right now ({type(e).__name__}).",
-                     "sources": [], "missing": None}
+        live.markdown("_Thinking..._")  # at once, so the bubble is never empty while the model reads the message
+        try:
+            earlier = [m["content"] for m in st.session_state.messages[:-1] if m["role"] == "user"]
+            last_bot = next((m for m in reversed(st.session_state.messages) if m["role"] == "assistant"), {})
+            # Only the products the reply actually listed, not every search hit behind it.
+            shown = [s for s in last_bot.get("sources", []) if s["kind"] == "product"
+                     and s["name"] in last_bot["content"] and inr(s["price"]) in last_bot["content"]]
+            r = answer(prompt, extra, history=earlier, shown=shown, on_token=lambda t: live.markdown(t + " ▌"))
+        except Exception as e:  # LLM down or bad key: show it instead of a stack trace
+            r = {"text": f"Sorry, I can't reach the language model right now ({type(e).__name__}).",
+                 "sources": [], "missing": None}
+        if not r["text"].strip():  # the model returned nothing: never leave a blank bubble
+            r["text"] = "Sorry, I lost my words for a moment. Could you ask that again?"
         reply = {"role": "assistant", "content": r["text"], "sources": r["sources"], "missing": r["missing"],
                  "product": r.get("product")}
         live.markdown(reply["content"])  # final text: adds the "not available" line and the next step
