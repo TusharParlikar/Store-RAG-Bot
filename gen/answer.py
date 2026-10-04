@@ -301,7 +301,8 @@ BUY = re.compile(r"\b(i'?ll (take|get|buy|have)|i ?will (take|get|buy)|(buy|take
 ORDINAL = re.compile(r"\b(first|1st|second|2nd|third|3rd)\b|(?:number|no\.?|#|option)\s*([1-3])\b|^\s*([1-3])\s*\.?\s*$")
 
 PURCHASE_TASK = ("Task: the customer wants to buy {name}. In 2 or 3 warm sentences say it is a good choice, "
-                 "what it is, and how it suits their situation. Do not mention any other product.\n")
+                 "what it is, and how it suits their situation. Use only features written in the context "
+                 "(never add a headrest, adjustable parts or materials it does not list). Do not mention any other product.\n")
 
 
 def plain(s: str) -> str:
@@ -384,7 +385,8 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
         text = llm([{"role": "system", "content": CASUAL}, {"role": "user", "content": question}])
         if len(text) > 250 or text.count("\n") >= 2:  # chit-chat is 1 or 2 sentences; more is a poem or essay
             text = "I'd love to, but I can only help with our furniture store. " + CASUAL_NEXT_STEP
-        if "furniture" not in text.lower() and "home" not in text.lower():  # the small model forgets to steer back
+        # The small model forgets to steer back; skip when it already ends by asking how it can help.
+        if "furniture" not in text.lower() and "home" not in text.lower() and not text.rstrip().endswith("?"):
             text += "\n\n" + CASUAL_NEXT_STEP
         return {"text": text, "sources": [], "missing": None, "understanding": u}
     if intent == "GENERAL_QUESTION":
