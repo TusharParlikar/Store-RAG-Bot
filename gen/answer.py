@@ -4,6 +4,7 @@ Also handles products the store does not carry: the bot says so, logs the
 request in data/requests/requests.csv, and suggests the closest product it has.
 """
 import csv
+import json
 import re
 from datetime import datetime
 from functools import lru_cache
@@ -48,64 +49,82 @@ List at most 3 products, the best matches first. Copy names and prices exactly f
 
 POLICY_FORMAT = "\nFormat: answer in 1 to 3 plain sentences. No list, no prices."
 
-# Few-shot: a 1.7b model follows examples far better than instructions.
-ROUTE = """Read the customer's message and reply with exactly one line:
-PRODUCT: <kind of product>  if they ask for, want or need any kind of item, even one a furniture store may not sell
-NEED: <furniture that would help>  if they describe a problem, pain, injury, feeling, life event or situation.
-  Name only furniture (chairs, armchairs, sofas, beds, footstools, tables, desks, storage), never medical items.
-HAPPY: <furniture that would help>  same as NEED, but for good news (a baby, a new home, a wedding, a new job)
-NONE  only if it is about a store policy (returns, warranty, delivery) or general knowledge unrelated to shopping
+INTENTS = {"PRODUCT_SEARCH", "PRODUCT_RECOMMENDATION", "PRODUCT_COMPARISON", "STORE_INFORMATION",
+           "ORDER_SUPPORT", "COMPLAINT", "CASUAL_CONVERSATION", "GENERAL_QUESTION"}
+POLICY_INTENTS = {"STORE_INFORMATION", "ORDER_SUPPORT", "COMPLAINT"}
+
+# LLM #1: understand the customer before anything is searched. Few-shot: a 1.7b model follows examples
+# far better than instructions. The model only describes the message; Python decides what to do with it.
+UNDERSTAND = """Read the customer's message (and their earlier messages, if given) and describe it as one JSON object:
+{"intent": one of PRODUCT_SEARCH, PRODUCT_RECOMMENDATION, PRODUCT_COMPARISON, STORE_INFORMATION, ORDER_SUPPORT, COMPLAINT, CASUAL_CONVERSATION, GENERAL_QUESTION,
+ "item": the kind of item they name, even one a furniture store may not sell, else "",
+ "problem": the problem, pain, injury, life event or situation they describe, else "",
+ "emotion": one of pain, frustrated, angry, confused, excited, worried, disappointed, neutral, casual,
+ "sentiment": positive, negative or neutral,
+ "furniture": furniture that would help their situation, else [],
+ "constraints": limits such as space, budget or room, else [],
+ "meaning": one sentence on what they really need}
+Intents:
+PRODUCT_SEARCH: they name a kind of item they want. PRODUCT_COMPARISON: they compare items.
+PRODUCT_RECOMMENDATION: they describe a problem, pain, feeling, life event or situation instead of naming an item.
+STORE_INFORMATION: returns, warranty, delivery, assembly, store policy. ORDER_SUPPORT: an existing order.
+COMPLAINT: something went wrong with their purchase. CASUAL_CONVERSATION: greetings, thanks, chit-chat, talk about themselves or this chatbot.
+GENERAL_QUESTION: general knowledge unrelated to the store.
+For "furniture" name only furniture (chairs, armchairs, recliners, sofas, beds, footstools, tables, desks, storage), never medical items.
+If earlier messages explain the current one (an injury, a new baby), use them.
 
 Customer: do you have a bunk bed?
-PRODUCT: bunk bed
+{"intent": "PRODUCT_SEARCH", "item": "bunk bed", "problem": "", "emotion": "neutral", "sentiment": "neutral", "furniture": [], "constraints": [], "meaning": "Wants a bunk bed."}
 
 Customer: How much is the MALM bed frame?
-PRODUCT: bed frame
-
-Customer: do you sell outdoor heaters?
-PRODUCT: outdoor heater
-
-Customer: I need a mirror for my hallway
-PRODUCT: mirror
+{"intent": "PRODUCT_SEARCH", "item": "bed frame", "problem": "", "emotion": "neutral", "sentiment": "neutral", "furniture": [], "constraints": [], "meaning": "Wants the price of the MALM bed frame."}
 
 Customer: do you sell televisions?
-PRODUCT: television
+{"intent": "PRODUCT_SEARCH", "item": "television", "problem": "", "emotion": "neutral", "sentiment": "neutral", "furniture": [], "constraints": [], "meaning": "Wants to buy a television."}
 
-Customer: I sprained my ankle and can't walk much
-NEED: armchair with armrests, footstool
+Customer: I need a mirror for my hallway
+{"intent": "PRODUCT_SEARCH", "item": "mirror", "problem": "", "emotion": "neutral", "sentiment": "neutral", "furniture": [], "constraints": ["hallway"], "meaning": "Wants a mirror for the hallway."}
+
+Customer: which is better for a small room, a sofa-bed or a daybed?
+{"intent": "PRODUCT_COMPARISON", "item": "sofa-bed", "problem": "", "emotion": "neutral", "sentiment": "neutral", "furniture": ["sofa-bed", "daybed"], "constraints": ["small room"], "meaning": "Wants to choose between a sofa-bed and a daybed for a small room."}
+
+Customer: my leg is broken and I need something comfortable
+{"intent": "PRODUCT_RECOMMENDATION", "item": "", "problem": "broken leg", "emotion": "pain", "sentiment": "negative", "furniture": ["recliner", "armchair with armrests", "footstool"], "constraints": [], "meaning": "Needs comfortable seating that supports the leg while recovering."}
 
 Customer: my neck hurts when I work, what can help?
-NEED: office chair with headrest, desk
+{"intent": "PRODUCT_RECOMMENDATION", "item": "", "problem": "neck pain while working", "emotion": "pain", "sentiment": "negative", "furniture": ["office chair with headrest", "desk"], "constraints": [], "meaning": "Needs a work setup that is easier on the neck."}
 
 Customer: I just moved into a tiny flat and have no space
-NEED: compact storage, sofa-bed, wall shelf
-
-Customer: I broke my arm last week
-NEED: armchair with armrests, side table, footstool
+{"intent": "PRODUCT_RECOMMENDATION", "item": "", "problem": "tiny flat with no space", "emotion": "worried", "sentiment": "neutral", "furniture": ["compact storage", "sofa-bed", "wall shelf"], "constraints": ["small space"], "meaning": "Needs furniture that saves space."}
 
 Customer: I'm stressed after work and can't relax
-NEED: comfortable armchair, sofa, footstool
-
-Customer: I can't sleep well at night
-NEED: comfortable bed, bedside table
+{"intent": "PRODUCT_RECOMMENDATION", "item": "", "problem": "stress after work", "emotion": "worried", "sentiment": "negative", "furniture": ["comfortable armchair", "sofa", "footstool"], "constraints": [], "meaning": "Needs a comfortable place to relax at home."}
 
 Customer: we are expecting a baby soon
-HAPPY: crib, changing table, nursery storage
+{"intent": "PRODUCT_RECOMMENDATION", "item": "", "problem": "a baby is coming", "emotion": "excited", "sentiment": "positive", "furniture": ["crib", "changing table", "nursery storage"], "constraints": [], "meaning": "Needs to furnish a nursery."}
 
-Customer: we just bought our first house
-HAPPY: sofa, dining table, bed
-
-Customer: my kids keep leaving toys everywhere
-NEED: children's storage, toy boxes
+Earlier messages: my leg is broken
+Customer: I need something for my room
+{"intent": "PRODUCT_RECOMMENDATION", "item": "", "problem": "broken leg", "emotion": "pain", "sentiment": "negative", "furniture": ["armchair with armrests", "footstool", "bedside table"], "constraints": ["bedroom"], "meaning": "Needs bedroom furniture that is easy to use with a broken leg."}
 
 Customer: can I return a chair after assembling it?
-NONE
+{"intent": "STORE_INFORMATION", "item": "", "problem": "", "emotion": "neutral", "sentiment": "neutral", "furniture": [], "constraints": [], "meaning": "Asks about the return policy for assembled items."}
 
-Customer: what does the warranty cover?
-NONE
+Customer: where is my order? it was supposed to come yesterday
+{"intent": "ORDER_SUPPORT", "item": "", "problem": "late order", "emotion": "worried", "sentiment": "negative", "furniture": [], "constraints": [], "meaning": "Wants to know where a late order is."}
+
+Customer: the table I bought arrived scratched, this is so annoying
+{"intent": "COMPLAINT", "item": "table", "problem": "table arrived scratched", "emotion": "frustrated", "sentiment": "negative", "furniture": [], "constraints": [], "meaning": "Wants a damaged table fixed or replaced."}
+
+Customer: hi! I want to build this chatbot
+{"intent": "CASUAL_CONVERSATION", "item": "", "problem": "", "emotion": "casual", "sentiment": "positive", "furniture": [], "constraints": [], "meaning": "Greets and chats about building the chatbot."}
 
 Customer: who is the prime minister?
-NONE"""
+{"intent": "GENERAL_QUESTION", "item": "", "problem": "", "emotion": "neutral", "sentiment": "neutral", "furniture": [], "constraints": [], "meaning": "Asks a general knowledge question."}"""
+
+CASUAL = """You are the friendly assistant of a furniture store in India. The customer is just chatting.
+Reply warmly in 1 or 2 short sentences, then offer to help with furniture, prices, warranty or returns.
+Never state product names, prices or store policies here, and never answer general knowledge questions."""
 
 UNAVAILABLE_TASK = ("Task: the store does NOT sell {item}; the customer has already been told. "
                     "Start your reply with \"Here is something close you might like:\" and suggest 1 or 2 products from the context "
@@ -119,12 +138,13 @@ NEED_TASK = ("Task: the customer told you about their situation. {opening} "
 _client = None
 
 
-def llm(messages: list[dict], temperature: float = config.LLM_TEMPERATURE) -> str:
+def llm(messages: list[dict], temperature: float = config.LLM_TEMPERATURE, json_mode: bool = False) -> str:
     global _client
     _client = _client or OpenAI(base_url=config.LLM_BASE_URL, api_key=config.LLM_API_KEY)
     # reasoning_effort="none" stops Qwen3 thinking (about 30x faster); max_tokens stops runaway replies.
     out = _client.chat.completions.create(model=config.LLM_MODEL, messages=messages, temperature=temperature,
-                                          max_tokens=400, reasoning_effort=config.LLM_REASONING_EFFORT)
+                                          max_tokens=400, reasoning_effort=config.LLM_REASONING_EFFORT,
+                                          **({"response_format": {"type": "json_object"}} if json_mode else {}))
     text = re.sub(r"<think>.*?</think>", "", out.choices[0].message.content or "", flags=re.S)
     return re.sub(r"/(no_)?think", "", text, flags=re.I).strip()  # Ollama sometimes echoes Qwen3's switch
 
@@ -167,22 +187,38 @@ def in_catalogue(word: str) -> bool:
     return any(w in words for w in (word, word + "s", word.removesuffix("s"), word.removesuffix("es")))
 
 
-def route(question: str) -> tuple[str, str]:
-    """('product', kind) | ('need' or 'happy', furniture search text) | ('none', '').
+def parse_understanding(reply: str) -> dict:
+    """Clean the model's JSON. Anything missing or malformed falls back to empty values (intent "")."""
+    match = re.search(r"\{.*\}", reply, re.S)
+    try:
+        raw = json.loads(match.group()) if match else {}
+    except json.JSONDecodeError:
+        raw = {}
+    raw = raw if isinstance(raw, dict) else {}
 
-    The LLM only labels the message (temperature 0); Python decides what to do with it.
-    """
+    def text(key):
+        v = raw.get(key)
+        return v.strip(" ./*\"'").lower() if isinstance(v, str) else ""
+
+    def items(key):
+        v = raw.get(key)
+        v = v if isinstance(v, list) else [v] if isinstance(v, str) else []
+        return [s.strip().lower() for s in v if isinstance(s, str) and s.strip()]
+
+    intent = text("intent").upper()
+    return {"intent": intent if intent in INTENTS else "", "item": text("item"), "problem": text("problem"),
+            "emotion": text("emotion") or "neutral", "sentiment": text("sentiment") or "neutral",
+            "furniture": items("furniture"), "constraints": items("constraints"),
+            "meaning": raw["meaning"].strip() if isinstance(raw.get("meaning"), str) else ""}
+
+
+def understand(question: str, history: list[str] = ()) -> dict:
+    """LLM #1 (temperature 0): intent, item, problem, emotion, sentiment, furniture, constraints, meaning."""
+    earlier = " | ".join(h[:300] for h in history[-3:])
+    msg = (f"Earlier messages: {earlier}\n" if earlier else "") + f"Customer: {question}"
     # Instructions in the system message: in one user message the model echoes "/no_think" instead of answering.
-    reply = llm([{"role": "system", "content": ROUTE}, {"role": "user", "content": f"Customer: {question}"}],
-                temperature=0)
-    line = (reply.splitlines() or ["NONE"])[0].strip(" *")
-    label, _, rest = line.partition(":")
-    label, rest = label.strip().lower(), rest.strip(" ./*\"'").lower()
-    if label in ("product", "need", "happy") and rest and rest != "none":
-        return label, rest
-    if not rest and label and label != "none":  # the model often drops the "PRODUCT:" label: "desk lamp"
-        return "product", label.strip(" ./*\"'")
-    return "none", ""
+    return parse_understanding(llm([{"role": "system", "content": UNDERSTAND}, {"role": "user", "content": msg}],
+                                   temperature=0, json_mode=True))
 
 
 def is_missing(kind: str) -> bool:
@@ -193,50 +229,84 @@ def is_missing(kind: str) -> bool:
     return not in_catalogue(head[-1])
 
 
-def answer(question: str, extra_context: str = "") -> dict:
-    """Returns {text, sources, missing}. extra_context carries computed facts such as a warranty check."""
+SYMPATHY = "Start with one short, warm sentence of sympathy in your own words about exactly what they said."
+CONGRATS = "Start by congratulating them warmly in your own words on exactly what they said."
+ACKNOWLEDGE = "Start with one short sentence showing you understood their situation, in your own words."
+
+
+def answer(question: str, extra_context: str = "", history: list[str] = ()) -> dict:
+    """Returns {text, sources, missing, understanding}.
+
+    extra_context carries computed facts such as a warranty check; history is the customer's earlier messages.
+    """
+    u = parse_understanding("") if extra_context else understand(question, history)
+    intent = u["intent"]
+    if intent == "CASUAL_CONVERSATION":  # chit-chat: no search, no store facts
+        text = llm([{"role": "system", "content": CASUAL}, {"role": "user", "content": question}])
+        return {"text": text, "sources": [], "missing": None, "understanding": u}
+    if intent == "GENERAL_QUESTION":
+        return {"text": IDK, "sources": [], "missing": None, "understanding": u}
+
     hits = search(question)
-
-    # Policy question (a policy section beats every product): give the model only policies,
-    # otherwise it lists loosely matching products ("return window" -> a window table).
+    # Policy question: give the model only policies, otherwise it lists loosely matching products
+    # ("return window" -> a window table). A policy section beating every product also counts.
     best_rule = max((h["score"] for h in hits if h["kind"] == "rule"), default=0)
-    policy = best_rule >= max(h["score"] for h in hits if h["kind"] == "product") and not extra_context
-    label, detail = ("none", "") if policy or extra_context else route(question)
+    rule_wins = best_rule >= max(h["score"] for h in hits if h["kind"] == "product")
+    policy = not extra_context and (intent in POLICY_INTENTS or rule_wins and intent != "PRODUCT_RECOMMENDATION")
+    need = intent == "PRODUCT_RECOMMENDATION" and bool(u["furniture"]) and not policy and not extra_context
 
-    if label in ("need", "happy"):
+    if need:
         # Search for the furniture that helps, not the words of the problem ("my leg is broken" -> table legs).
+        detail = " ".join(u["furniture"])
         query = " ".join(w for w in re.findall(r"[a-z'-]+", detail) if w not in NOT_FURNITURE) or detail
         hits = [h for h in search(query, k=20) if not PART.match(h.get("name", "").partition(" - ")[2])][:6]
     elif hits[0]["score"] < MIN_SCORE and not extra_context:
-        return {"text": IDK, "sources": [], "missing": None}
+        return {"text": IDK, "sources": [], "missing": None, "understanding": u}
     if policy:
         hits = [h for h in hits if h["kind"] == "rule"]
 
-    missing = detail if label == "product" and is_missing(detail) else None
+    item = u["item"]
+    missing = item if intent.startswith("PRODUCT") and not policy and item and is_missing(item) else None
+    if need:
+        opening = {"positive": CONGRATS, "negative": SYMPATHY}.get(u["sentiment"], ACKNOWLEDGE)
+    else:
+        opening = SYMPATHY if u["sentiment"] == "negative" else ""
     task = ""
     if missing:
         task = UNAVAILABLE_TASK.format(item=missing) + "\n"
-    elif label == "need":
-        task = NEED_TASK.format(opening="Start with one short, warm sentence of sympathy in your own words about exactly what they said.") + "\n"
-    elif label == "happy":
-        task = NEED_TASK.format(opening="Start by congratulating them warmly in your own words on exactly what they said.") + "\n"
+    elif need:
+        task = NEED_TASK.format(opening=opening) + "\n"
+    elif opening:
+        task = f"Task: {opening} Then answer their question.\n"
+
+    # LLM #2 gets what LLM #1 understood, so it answers the reason behind the request, not only the words.
+    about = " ".join(filter(None, [
+        u["meaning"],
+        u["problem"] and f"Situation: {u['problem']}.",
+        u["emotion"] not in ("neutral", "casual") and f"Feeling: {u['emotion']}.",
+        u["constraints"] and f"Limits: {', '.join(u['constraints'])}.",
+    ]))
+    about = f"What the customer needs: {about}\n" if about else ""
 
     context = "\n".join(f"[{h['source']}] {h['text']}" for h in hits)
     if extra_context:
         context += "\n" + extra_context
     text = llm([
         {"role": "system", "content": SYSTEM + (POLICY_FORMAT if policy or extra_context else PRODUCT_FORMAT)},
-        {"role": "user", "content": f"Context:\n{context}\n\n{task}Customer: {question}"},
+        {"role": "user", "content": f"Context:\n{context}\n\n{about}{task}Customer: {question}"},
     ])
     if missing:
         # Small models often repeat the "we don't sell it" line; drop that leading sentence.
         text = re.sub(r"(the store|we) (does|do) not (sell|have|carry)[^.]*\.\s*", "", text, flags=re.I).strip()
         text = NOT_AVAILABLE.format(item=missing) + "\n\n" + text
         log_request(missing, question)
-    return {"text": text, "sources": hits, "missing": missing}
+    return {"text": text, "sources": hits, "missing": missing, "understanding": u}
 
 
 if __name__ == "__main__":
+    u = parse_understanding('```json\n{"intent": "product_search", "item": "Desk Lamp.", "furniture": "desk"}\n```')
+    assert (u["intent"], u["item"], u["furniture"], u["sentiment"]) == ("PRODUCT_SEARCH", "desk lamp", ["desk"], "neutral")
+    assert parse_understanding("not json")["intent"] == "" and parse_understanding('{"intent": "HACK"}')["intent"] == ""
     for q in ["my leg is broken, suggest me something", "I have back pain from sitting all day",
               "Do you sell desk lamps?", "Do you have a coffee table?", "What is the capital of France?"]:
         r = answer(q)
