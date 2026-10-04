@@ -9,8 +9,12 @@ Full build plan: [project.md](project.md). Deployment plan: [DEPLOYMENT.md](DEPL
 | Step | What | State |
 |---|---|---|
 | 1 | Data (`data/`) | Done |
-| 2 | Chunk and embed (`nlp/`) | Next |
-| 3 to 11 | Index, answer, warranty check, chat page, sales features | To do |
+| 2 | Chunk and embed (`nlp/`) | Done |
+| 3 | FAISS index and search (`rag/`) | Done |
+| 4 | Answers with sources, "I don't know", not-available handling (`gen/`) | Done |
+| 5 | Warranty check (`gen/warranty.py`) | Done |
+| 6 | Streamlit chat page (`app/`) | Done (Version 1) |
+| 7 to 11 | Benefits, cart, setup planner, orders, full run-through | To do |
 
 ## Architecture
 
@@ -39,6 +43,15 @@ flowchart LR
         GEN --> APP
     end
 ```
+
+### Products the store does not carry
+
+When a customer asks for something not in the catalogue (for example a desk lamp or a carpet), the bot:
+1. Says honestly that it is not available and that the request was passed to the team.
+2. Logs the request in `data/requests/requests.csv` (time, item, question), so the store can see what people ask for.
+3. Suggests the closest products it does have, with price and benefit.
+
+How it decides: the LLM only names the product kind (temperature 0, few-shot). Python then checks whether that word appears in any product name or category. A 1.7b model cannot judge stock reliably on its own.
 
 Key rules from the design:
 - `data/` is the only place facts live. The LLM only puts retrieved facts into words.
@@ -77,7 +90,20 @@ cp .env.example .env            # defaults point at local Ollama
 python nlp/prepare_products.py  # rebuild data/products/products.csv
 ```
 
-The Streamlit command is added in step 6: `streamlit run app/main.py`.
+```bash
+python -m rag.index             # build the FAISS index (also built automatically on first run)
+streamlit run app/main.py       # chat page at http://localhost:8501
+```
+
+## Tests
+
+```bash
+python -m gen.warranty          # warranty date edge cases
+python -m tests.scenarios       # 18 end-to-end chat scenarios against the real index and LLM
+python -m tests.scenarios 3     # same, 3 rounds each to catch flaky LLM output
+```
+
+On CPU with `qwen3:1.7b`, each reply takes about 10 to 30 seconds (two LLM calls: product check and answer).
 
 ## Configuration
 
@@ -89,6 +115,7 @@ All settings are environment variables. See [.env.example](.env.example).
 | `LLM_API_KEY` | API key (`ollama` for local) |
 | `LLM_MODEL` | Model name |
 | `LLM_TEMPERATURE` | 0.4 to 0.5 |
+| `LLM_REASONING_EFFORT` | `none` turns Qwen3 thinking off (about 30x faster) |
 | `EMBED_MODEL` | Sentence-transformers model |
 
 `.env` is git-ignored. Never commit keys.
