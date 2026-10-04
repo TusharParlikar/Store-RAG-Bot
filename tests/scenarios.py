@@ -38,6 +38,12 @@ SCENARIOS = [
     # off topic
     ("What is the capital of France?", "idk", [IDK]),
     ("Who won the football world cup?", "idk", [IDK]),
+    # chit-chat: friendly reply, no products
+    ("hi there, I want to build this chatbot", "answer", ["!₹"]),
+    # complaint: empathy, then policy
+    ("the chair I bought arrived broken and I'm really upset", "answer", ["sorry", "!₹"]),
+    # memory: the earlier message explains the new one (4th item = earlier messages)
+    ("I need something for my room", "answer", ["sorry", "₹", "!- Leg"], ["my leg is broken"]),
 ]
 
 
@@ -49,17 +55,17 @@ def kind_of(r: dict) -> str:
 
 def main(rounds: int = 1):
     fails = 0
-    for q, want, must in SCENARIOS:
+    for q, want, must, *earlier in SCENARIOS:
         for _ in range(rounds):
             t = time.time()
-            r = answer(q)
+            r = answer(q, history=earlier[0] if earlier else [])
             got = kind_of(r)
             text = r["text"].lower()
             ok = got == want and all((m[1:].lower() not in text) if m.startswith("!") else (m.lower() in text) for m in must)
             fails += not ok
             print(f"{'PASS' if ok else 'FAIL'} {time.time() - t:5.1f}s  [{got}] {q}")
             if not ok:
-                print(f"      want [{want}] containing {must}\n      got: {r['text'][:300]!r}")
+                print(f"      want [{want}] containing {must}\n      understood: {r.get('understanding')}\n      got: {r['text'][:300]!r}")
     total = len(SCENARIOS) * rounds
     print(f"\n{total - fails}/{total} passed")
     return fails
