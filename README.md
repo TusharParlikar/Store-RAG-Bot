@@ -78,6 +78,27 @@ The reply the customer sees (from a real run, shortened):
 >
 > Would you like one of these? Tell me the number and I'll share the full details.
 
+### LLM calls per message
+
+| Message | Calls |
+|---|---|
+| Off-topic, or nothing in the data matches | 1 |
+| Product question, described need, policy question, chit-chat, picking a product | 2 |
+| Warranty check with a purchase date (date maths in [gen/warranty.py](gen/warranty.py)) | 1 |
+
+### Build phase (once, when the data changes)
+
+```mermaid
+flowchart LR
+    RAW[data/raw/ikea.csv] --> PREP[nlp/prepare_products.py<br/>SAR to INR, category info]
+    PREP --> PROD[data/products/products.csv]
+    PROD --> CH[nlp/chunks.py<br/>1 chunk per product]
+    RULES[data/rules/*.md] --> CH2[nlp/chunks.py<br/>1 chunk per policy section]
+    CH --> EMB[all-MiniLM-L6-v2 embeddings]
+    CH2 --> EMB
+    EMB --> IDX[(index/ FAISS)]
+```
+
 ## Stack
 
 | Part | Choice |
