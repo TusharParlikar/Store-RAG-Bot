@@ -118,6 +118,21 @@ Open http://localhost:8501. The first start builds the FAISS index and downloads
 
 To rebuild from the raw data: `python nlp/prepare_products.py`, then `python -m rag.index`.
 
+## Configuration
+
+All settings are environment variables, read by [config.py](config.py). See [.env.example](.env.example).
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `LLM_BASE_URL` | no | `http://localhost:11434/v1` | OpenAI-compatible endpoint (Ollama or Groq) |
+| `LLM_API_KEY` | no | `ollama` | API key; set `<YOUR_GROQ_API_KEY>` for Groq |
+| `LLM_MODEL` | no | `qwen3:1.7b` | Model name (`qwen/qwen3-32b` on Groq) |
+| `LLM_TEMPERATURE` | no | `0.8` | Warmth of product replies (understanding uses 0, policy answers 0.3) |
+| `LLM_REASONING_EFFORT` | no | `none` | `none` turns Qwen3 thinking off (about 30x faster) |
+| `EMBED_MODEL` | no | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
+
+`.env` is git-ignored. Never commit keys. Deployment steps: [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Stack
 
 | Part | Choice |
@@ -146,18 +161,3 @@ python -m tests.scenarios 3     # same, 3 rounds each to catch flaky LLM output
 ```
 
 On CPU with `qwen3:1.7b`, each reply takes about 10 to 30 seconds (two LLM calls: product check and answer).
-
-## Configuration
-
-All settings are environment variables. See [.env.example](.env.example).
-
-| Variable | Meaning |
-|---|---|
-| `LLM_BASE_URL` | OpenAI-compatible endpoint (Ollama or Groq) |
-| `LLM_API_KEY` | API key (`ollama` for local) |
-| `LLM_MODEL` | Model name |
-| `LLM_TEMPERATURE` | 0.8 for warmer replies (the understanding step always uses 0) |
-| `LLM_REASONING_EFFORT` | `none` turns Qwen3 thinking off (about 30x faster) |
-| `EMBED_MODEL` | Sentence-transformers model |
-
-`.env` is git-ignored. Never commit keys.
