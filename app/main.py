@@ -55,7 +55,25 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 
-def show_extras(msg: dict):
+def show_next_steps(product: dict, key: str):
+    """Buttons after a customer picks a product: each one sends a follow-up message, or opens the product page."""
+    # The product type, not its name: a name would read as "buy this one" again.
+    kind = product["name"].partition(" - ")[2].lower() or product["category"].lower()
+    steps = {"What goes with it?": f"Show me {product['goes_with'].split(';')[0].strip().lower()}",  # the product's words would find it again
+             "Warranty and returns": f"What does the {product['warranty_months']}-month warranty on a {kind} cover, and can I return it?",
+             "Similar options": f"Show me other {kind} options"}
+    cols = st.columns(len(steps) + 1)
+    if product.get("link"):
+        cols[0].link_button("Product page", product["link"], use_container_width=True)
+    for col, (label, text) in zip(cols[1:], steps.items()):
+        if col.button(label, key=f"{key}-{label}", use_container_width=True):
+            st.session_state.queued = text
+            st.rerun()
+
+
+def show_extras(msg: dict, key: str):
+    if msg.get("product"):
+        show_next_steps(msg["product"], key)
     if msg.get("missing"):
         st.markdown(f'<div class="note">📝 Request noted: <b>{msg["missing"]}</b></div>', unsafe_allow_html=True)
     if msg.get("sources"):
@@ -69,12 +87,12 @@ def show_extras(msg: dict):
                     st.markdown(f'<span class="src">{label}</span>', unsafe_allow_html=True)
 
 
-for msg in st.session_state.messages:
+for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"], avatar="🙂" if msg["role"] == "user" else "🪑"):
         st.markdown(msg["content"])
-        show_extras(msg)
+        show_extras(msg, str(i))
 
-prompt = st.chat_input("Ask me anything about our furniture...")
+prompt = st.chat_input("Ask me anything about our furniture...") or st.session_state.pop("queued", None)
 if not st.session_state.messages and not prompt:
     st.caption("Try one of these:")
     cols = st.columns(3)
@@ -99,11 +117,16 @@ if prompt:
         with st.spinner("Thinking..."):
             try:
                 earlier = [m["content"] for m in st.session_state.messages[:-1] if m["role"] == "user"]
-                r = answer(prompt, extra, history=earlier)
+                last_bot = next((m for m in reversed(st.session_state.messages) if m["role"] == "assistant"), {})
+                # Only the products the reply actually listed, not every search hit behind it.
+                shown = [s for s in last_bot.get("sources", []) if s["kind"] == "product"
+                         and s["name"] in last_bot["content"] and inr(s["price"]) in last_bot["content"]]
+                r = answer(prompt, extra, history=earlier, shown=shown)
             except Exception as e:  # LLM down or bad key: show it instead of a stack trace
                 r = {"text": f"Sorry, I can't reach the language model right now ({type(e).__name__}).",
                      "sources": [], "missing": None}
-        reply = {"role": "assistant", "content": r["text"], "sources": r["sources"], "missing": r["missing"]}
+        reply = {"role": "assistant", "content": r["text"], "sources": r["sources"], "missing": r["missing"],
+                 "product": r.get("product")}
         st.markdown(reply["content"])
-        show_extras(reply)
+        show_extras(reply, str(len(st.session_state.messages)))
     st.session_state.messages.append(reply)
