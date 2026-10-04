@@ -46,11 +46,25 @@ flowchart LR
 
 ### Customers describing a problem
 
-Every message (except policy questions) first goes through a small router (temperature 0, few-shot) that labels it:
-- `PRODUCT: desk lamp`: a product request. Checked against the catalogue, see below.
-- `NEED: armchair with armrests, footstool`: a pain, injury, worry or situation ("my leg is broken"). The bot searches for the furniture that helps, not the words of the problem (which would match table legs), drops spare parts, and opens with a line of sympathy.
-- `HAPPY: crib, changing table`: good news ("a baby is coming"). Same, but opens with congratulations.
-- `NONE`: policy or off-topic.
+Every message (except a warranty check with a purchase date) first goes through an understanding step: one LLM call (temperature 0, few-shot, JSON mode) that describes the message before anything is searched. It also sees the customer's last 3 messages, so "I need something for my room" after "my leg is broken" is understood as part of the same situation.
+
+```json
+{"intent": "PRODUCT_RECOMMENDATION", "item": "", "problem": "broken leg", "emotion": "pain",
+ "sentiment": "negative", "furniture": ["armchair with armrests", "footstool"], "constraints": ["bedroom"],
+ "meaning": "Needs bedroom furniture that is easy to use with a broken leg."}
+```
+
+The model only describes the message. Python decides what happens next:
+
+| Intent | What happens |
+|---|---|
+| `PRODUCT_SEARCH`, `PRODUCT_COMPARISON` | Search the question. The `item` is checked against the catalogue, see below. |
+| `PRODUCT_RECOMMENDATION` | Search for the `furniture` that helps, not the words of the problem (which would match table legs), and drop spare parts. |
+| `STORE_INFORMATION`, `ORDER_SUPPORT`, `COMPLAINT` | Policy sections only. |
+| `CASUAL_CONVERSATION` | A short friendly reply with no search and no store facts. |
+| `GENERAL_QUESTION` | "I don't know", without a second LLM call. |
+
+The opening of the reply follows the sentiment: sympathy for a problem or complaint, congratulations for good news ("a baby is coming"), and a short acknowledgement for a neutral situation. The answer step also receives the meaning, situation, feeling and limits, so it answers the reason behind the request, not only its words. If the JSON is broken, the message falls back to a plain search with the score cutoff.
 
 Benefits stay at comfort level: no medical advice or promises.
 
@@ -61,7 +75,7 @@ When a customer asks for something not in the catalogue (for example a desk lamp
 2. Logs the request in `data/requests/requests.csv` (time, item, question), so the store can see what people ask for.
 3. Suggests the closest products it does have, with price and benefit.
 
-How it decides: the router names the product kind. Python then checks whether that word appears in any product name or category. A 1.7b model cannot judge stock reliably on its own.
+How it decides: the understanding step names the product kind (`item`). Python then checks whether that word appears in any product name or category. A 1.7b model cannot judge stock reliably on its own.
 
 Key rules from the design:
 - `data/` is the only place facts live. The LLM only puts retrieved facts into words.
@@ -124,7 +138,7 @@ All settings are environment variables. See [.env.example](.env.example).
 | `LLM_BASE_URL` | OpenAI-compatible endpoint (Ollama or Groq) |
 | `LLM_API_KEY` | API key (`ollama` for local) |
 | `LLM_MODEL` | Model name |
-| `LLM_TEMPERATURE` | 0.8 for warmer replies (the router always uses 0) |
+| `LLM_TEMPERATURE` | 0.8 for warmer replies (the understanding step always uses 0) |
 | `LLM_REASONING_EFFORT` | `none` turns Qwen3 thinking off (about 30x faster) |
 | `EMBED_MODEL` | Sentence-transformers model |
 
