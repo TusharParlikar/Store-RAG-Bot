@@ -1,20 +1,18 @@
 # Store RAG Bot
 
-A chatbot for a furniture store. It answers questions from the store's own data (prices, warranty, returns), recommends products for a need and explains why they help, suggests items that go together, plans bigger setups such as "an office for 30 people", and saves the final order. If the data does not contain the answer, the bot says "I don't know".
+A chat assistant for a furniture store that answers only from the store's own data and helps customers find, and buy, furniture that suits their situation.
 
-Full build plan: [project.md](project.md). Deployment plan: [DEPLOYMENT.md](DEPLOYMENT.md).
+Customers rarely ask for a product by name. They say "my leg is broken" or "we're expecting a baby". A plain search on those words finds table legs and baby-shaped nothing. This bot first works out what the customer means, then searches for the furniture that helps, and answers with real prices and policies from the catalogue. If the data does not contain the answer, it says "I don't know" instead of guessing.
 
-## Status
+## Features
 
-| Step | What | State |
-|---|---|---|
-| 1 | Data (`data/`) | Done |
-| 2 | Chunk and embed (`nlp/`) | Done |
-| 3 | FAISS index and search (`rag/`) | Done |
-| 4 | Answers with sources, "I don't know", not-available handling (`gen/`) | Done |
-| 5 | Warranty check (`gen/warranty.py`) | Done |
-| 6 | Streamlit chat page (`app/`) | Done (Version 1) |
-| 7 to 11 | Benefits, cart, setup planner, orders, full run-through | To do |
+- **Understands the situation**: reads intent, feeling and needs from each message, and remembers the last 3 messages.
+- **Empathy first**: sympathy for a problem, congratulations for good news, then up to 3 products and how each one helps.
+- **Facts only from the data**: prices in ₹, warranty lengths and policies come from `data/`, never from the model's memory.
+- **Honest about stock**: "Sorry, laptop is not available in our store right now", logs the request for the store, and suggests the closest match.
+- **Guides the purchase**: "the second one" or "I'll take the HATTEFJÄLL" shows the exact product facts and next-step buttons.
+- **Warranty check**: from a purchase date, Python works out whether the item is still covered.
+- **Runs locally or free in the cloud**: Ollama on your machine, or Groq's free tier when deployed. Same code.
 
 ## Architecture
 
