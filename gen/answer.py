@@ -26,15 +26,26 @@ NOT_AVAILABLE = "Sorry, {item} is not available in our store right now. I have p
 
 REQUESTS = Path(__file__).resolve().parent.parent / "data" / "requests" / "requests.csv"
 
-SYSTEM = f"""You are the friendly assistant of a furniture store. Prices are in SAR.
+SYSTEM = f"""You are the friendly assistant of a furniture store in India. Prices are in Indian rupees (₹).
 Rules:
 1. Answer only from the context below.
 2. If the context does not answer the question, reply exactly: "{IDK}"
 3. Quote prices and warranty lengths exactly as written in the context.
 4. Mention which product or policy the answer comes from.
-5. Keep answers short: 2 to 5 sentences.
+5. Keep answers short.
 6. Describe benefits at comfort level only. No medical promises.
 7. If a "Warranty check (computed)" line is given, use its status and date as-is. Never calculate dates yourself."""
+
+# Added to SYSTEM only when products are in the context: the small model copies a list template into everything.
+PRODUCT_FORMAT = """
+Format: start with a one-line greeting, then put each product on its own numbered line:
+the product name in bold, an en dash, the ₹ price, then its benefit from the context in a few words. Example:
+Hello! We have:
+1. **NAME - Product, size** – ₹price. Benefit in a few words.
+2. **NAME - Product, size** – ₹price. Benefit in a few words.
+List at most 3 products, the best matches first."""
+
+POLICY_FORMAT = "\nFormat: answer in 1 to 3 plain sentences. No list, no prices."
 
 # Few-shot: a 1.7b model follows examples far better than instructions.
 EXTRACT = """Name the kind of product the customer wants to buy or asks about. Reply with the product kind only.
@@ -60,7 +71,7 @@ Product: NONE"""
 
 UNAVAILABLE_TASK = ("Task: the store does NOT sell {item}; the customer has already been told. "
                     "Start your reply with \"Here is something close you might like:\" and suggest 1 or 2 products from the context "
-                    "that could do a similar job, with price and their benefit. Do not claim they do what {item} does. "
+                    "that could do a similar job, as a numbered list (bold name – ₹ price – benefit). Do not claim they do what {item} does. "
                     "If nothing in the context is a sensible substitute, only say which kinds of furniture the store does have.")
 
 _client = None
@@ -126,13 +137,20 @@ def answer(question: str, extra_context: str = "") -> dict:
     if hits[0]["score"] < MIN_SCORE and not extra_context:
         return {"text": IDK, "sources": [], "missing": None}
 
+    # Policy question (a policy section beats every product): give the model only policies,
+    # otherwise it lists loosely matching products ("return window" -> a window table).
+    best_rule = max((h["score"] for h in hits if h["kind"] == "rule"), default=0)
+    policy = best_rule >= max(h["score"] for h in hits if h["kind"] == "product") and not extra_context
+    if policy:
+        hits = [h for h in hits if h["kind"] == "rule"]
+
     context = "\n".join(f"[{h['source']}] {h['text']}" for h in hits)
     if extra_context:
         context += "\n" + extra_context
-    missing = missing_item(question)
+    missing = None if policy else missing_item(question)
     task = UNAVAILABLE_TASK.format(item=missing) + "\n" if missing else ""
     text = llm([
-        {"role": "system", "content": SYSTEM},
+        {"role": "system", "content": SYSTEM + (POLICY_FORMAT if policy or extra_context else PRODUCT_FORMAT)},
         {"role": "user", "content": f"Context:\n{context}\n\n{task}Customer: {question}"},
     ])
     if missing:
