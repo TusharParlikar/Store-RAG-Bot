@@ -73,12 +73,14 @@ Python fixes two labels the small model gets wrong: "the leg of my table snapped
 |---|---|
 | `PRODUCT_RECOMMENDATION` | Search the helpful `furniture`, not the problem words ("leg" would find table legs). Spare parts are dropped. |
 | `PRODUCT_SEARCH`, `PRODUCT_COMPARISON` | Search the question. Check whether the `item` is sold. |
-| `PURCHASE`, or a buying phrase after a list | Find the one product the customer means. Show its facts, a product page link and next-step buttons. |
+| `PURCHASE`, or a buying phrase after a list | Find the product or products the customer means and add them to the cart. One product: show its facts, a product page link and next-step buttons. |
 | `STORE_INFORMATION`, `ORDER_SUPPORT`, `COMPLAINT` | Policy sections only. Complaints see only the warranty and returns policies. |
 | `CASUAL_CONVERSATION` | A short friendly reply with no search and no store facts. |
 | `GENERAL_QUESTION` | "I don't know", with no second LLM call. |
 
-**Picking a product** (`pick_product()`): a product name first ("the HATTEFJÄLL"), then "cheapest", "most expensive" or "the last one", then a position ("2", "1st", "the second one", "number 3"). If several products were listed and none of these match, the bot asks which one.
+**Which products were listed** (`listed()`): the products of the last reply, in the order the reply shows them. The model reorders search results, so "the second one" must follow the text, not the search rank.
+
+**Picking** (`pick_products()`): several at once ("the first and the third", "both"), otherwise one: a product name first ("the HATTEFJÄLL"), then "cheapest", "most expensive" or "the last one", then a position ("2", "1st", "the second one", "number 3"). If several products were listed and none of these match, the bot asks which one.
 
 ### 4. Retrieve: `search()` in `rag/index.py`
 
@@ -98,9 +100,24 @@ Python then:
 - adds the "not available" line and logs the request to `data/requests/requests.csv`,
 - removes copied template text and the model's own closing question,
 - adds **Product pages** links for products the customer named ("How much is the MALM bed?"). Names that are also everyday words ("LACK", "HALLO") count only when typed in capitals,
-- ends every product list with "Would you like one of these? Tell me the number".
+- ends every product list with "Would you like one of these? Tell me the number and I'll add it to your cart".
 
 `app/main.py` shows the reply, a "Request noted" note, next-step buttons after a pick, and a Sources panel with scores, links and prices.
+
+## Cart and checkout: `gen/cart.py`
+
+The chat page opens with a welcome message that asks what the customer needs. The cart is a list of products kept in the browser session and passed to `answer()` with every message.
+
+Before any LLM call, `command()` checks whether the message is about the cart itself:
+
+| Message | Result |
+|---|---|
+| "check out", "place my order", or "that's all" / "I'm done" with items in the cart | The order: every item with its product page link, and the total. The cart is emptied. |
+| "show my cart" | The items and the total |
+| "remove 2", "remove the MALM" | That item is removed |
+| "empty my cart" | Everything is removed |
+
+A pick adds to the cart and the reply ends with the cart size and total. The same product is not added twice. The sidebar shows the cart and a Check out button. There is no payment step: checkout hands over the links.
 
 ## LLM calls per message
 
@@ -110,6 +127,7 @@ Python then:
 | Product question, described need, policy question, chit-chat, picking a product | 2 |
 | "I'll take that one" when several were listed (the bot asks which) | 1 |
 | Warranty check with a purchase date | 1 |
+| Cart commands: check out, show, remove, empty | 0 |
 
 ## Speed
 
