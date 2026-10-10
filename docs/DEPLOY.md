@@ -80,7 +80,7 @@ Try each of these on the public URL:
 | `check out` | The order with a link for each product, and an empty cart |
 | `What is your return window?` | 365 days |
 | `do you sell laptops?` | "Not available", then close alternatives |
-| Sidebar: turn on the purchase date, then `is my MARKUS office chair still under warranty?` | Covered or expired, with the last covered day |
+| Sidebar **Warranty check**: product `MARKUS office chair`, any purchase date, press **Check warranty** | Covered or expired, with the last covered day |
 
 To update the app later, push to `main`. Streamlit Cloud redeploys by itself.
 

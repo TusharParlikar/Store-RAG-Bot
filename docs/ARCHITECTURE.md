@@ -47,8 +47,8 @@ The index is built on the first search if `index/` is missing, or by `python -m 
 ```mermaid
 flowchart TD
     U([Customer types a message or clicks a button]) --> APP["app/main.py<br/>Streamlit chat"]
-    APP -->|"warranty toggle on"| W["gen/warranty.py<br/>date maths in Python"]
-    W --> ANS
+    APP -->|"sidebar: Check warranty"| W["gen/warranty.py<br/>date maths in Python, no LLM"]
+    W --> APP
     APP --> ANS["gen/answer.py: answer"]
     ANS --> L1[["LLM call 1: understand<br/>JSON: intent, emotion, needs"]]
     L1 --> R{"Python router"}
@@ -69,7 +69,7 @@ flowchart TD
 
 Takes the typed message, or the text of a clicked next-step button. It passes along the customer's earlier messages and the products listed in the bot's last reply.
 
-If the sidebar date toggle is on and the message mentions warranty, [gen/warranty.py](../gen/warranty.py) works out the last covered day. The model receives the result as a fact. This path skips step 2.
+The sidebar has two things that never reach the model. The **warranty checker** takes a product and a purchase date; [gen/warranty.py](../gen/warranty.py) works out the last covered day and the answer goes straight into the chat. The **cart** has a remove button next to every product. A chat message that asks whether something is still under warranty gets a normal answer plus a pointer to the checker, because the bot cannot know the purchase date.
 
 ### 2. Understand (LLM call 1): `gen/understand.py`
 
@@ -146,7 +146,7 @@ A pick adds to the cart and the reply ends with the cart size and total. The sam
 | Off-topic, or nothing in the data matches | 1 |
 | Product question, described need, policy question, chit-chat, picking a product | 2 |
 | "I'll take that one" when several were listed (the bot asks which) | 1 |
-| Warranty check with a purchase date | 1 |
+| The sidebar warranty checker, and the cart's remove buttons | 0 |
 | Cart commands: check out, show, remove, empty | 0 |
 
 ## Speed

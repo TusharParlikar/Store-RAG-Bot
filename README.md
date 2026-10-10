@@ -36,7 +36,7 @@ Replies are from real runs, shortened.
 - **Honest about stock**: says when a product is not sold, logs the request for the store, and suggests the closest match.
 - **Cart and checkout**: the bot opens by asking what you need. "2", "1st", "the first and the third", "the cheapest one" or "I'll take the HATTEFJÄLL" adds products to a cart. Keep shopping, remove items, then say "check out" to get the list with a link to each product page and the total.
 - **Direct links**: name a product ("How much is the MALM bed?") and the reply ends with links to its product pages.
-- **Warranty check**: from a purchase date, Python works out whether the item is still covered.
+- **Warranty checker**: type a product and a purchase date in the sidebar, and Python works out whether it is still covered and until which day. No model is involved, so it always answers.
 - **Local or hosted model**: Ollama on your machine, or any OpenAI-compatible API such as Groq. Same code.
 
 ## Quick start
@@ -107,7 +107,7 @@ All settings are environment variables, read by [config.py](config.py). See [.en
 
 ```
 app/main.py              the chat loop: take a message, get the answer, show it
-app/ui.py                page look, sidebar (cart, warranty date), buttons under a reply
+app/ui.py                page look, sidebar (cart with remove buttons, warranty checker), buttons under a reply
 gen/answer.py            the steps of one answer, in order; the only entry point
 gen/understand.py        read the message (LLM call 1) and correct its labels
 gen/picking.py           which product "the second one" or "the cheapest" means
@@ -138,7 +138,7 @@ python -m tests.scenarios       # 77 chat scenarios against the real index and L
 python -m tests.shopping        # 5 shopping trips, 26 turns, with the cart carried between turns
 ```
 
-The scenarios cover prices, policies, needs and feelings, products not sold, off-topic questions, chit-chat, complaints, memory, picking a product and named-product links. On the local `qwen3:1.7b` model the shopping trips pass 26 of 26, and the last full run of the 77 scenarios passed 75 of 77 (that run was before the code was split into modules). On Groq (`openai/gpt-oss-120b`) the shopping trips pass 26 of 26; the 77 scenarios have not completed there, because the free daily token limit ran out.
+The scenarios cover prices, policies, needs and feelings, products not sold, off-topic questions, chit-chat, complaints, memory, picking a product and named-product links. On the local `qwen3:1.7b` model the shopping trips pass 26 of 26, and the 77 scenarios pass 75 of 77. On Groq (`openai/gpt-oss-120b`) the shopping trips pass 26 of 26; the 77 scenarios have not completed there, because the free daily token limit ran out.
 
 ## Data
 
