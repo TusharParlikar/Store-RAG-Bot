@@ -9,6 +9,24 @@ How Store RAG Bot turns a customer message into a reply. For setup and an overvi
 - **A weak match means "I don't know".** If nothing in the data is close to the question, the bot says so without a second LLM call.
 - **Honest selling.** No invented discounts, stock limits or deadlines, and no medical promises.
 
+## Where the code lives
+
+`gen/answer.py` is the only entry point: `answer()` runs the steps below in order and each step is one short function or one module.
+
+| File | Job |
+|---|---|
+| `app/main.py` | The chat loop: take a message, call `answer()`, show the reply |
+| `app/ui.py` | Page look, sidebar, buttons under a reply |
+| `gen/answer.py` | The steps of one answer |
+| `gen/understand.py` | LLM call 1 and the label fixes |
+| `gen/picking.py` | Which product the customer means |
+| `gen/catalogue.py` | Stock check, product names, links |
+| `gen/cart.py` | Cart and checkout |
+| `gen/prompts.py` | All prompt text |
+| `gen/llm.py` | The one function that calls the model |
+| `gen/warranty.py` | Warranty date maths |
+| `rag/index.py`, `nlp/chunks.py` | Search index, chunks and embeddings |
+
 ## Build phase (once, when the data changes)
 
 ```mermaid
@@ -53,7 +71,7 @@ Takes the typed message, or the text of a clicked next-step button. It passes al
 
 If the sidebar date toggle is on and the message mentions warranty, [gen/warranty.py](../gen/warranty.py) works out the last covered day. The model receives the result as a fact. This path skips step 2.
 
-### 2. Understand (LLM call 1): `understand()`
+### 2. Understand (LLM call 1): `gen/understand.py`
 
 Temperature 0, JSON mode, few-shot examples from [gen/prompts.py](../gen/prompts.py). The model sees the message and the last 3 earlier messages. For "my leg is broken" it returns:
 
@@ -65,20 +83,22 @@ Temperature 0, JSON mode, few-shot examples from [gen/prompts.py](../gen/prompts
 
 Broken or unknown JSON falls back to a plain search with the score cutoff.
 
-### 3. Correct and route: `answer()`
+### 3. Correct and route
 
-Python fixes two labels the small model gets wrong: "the leg of my table snapped" becomes a complaint (furniture broke, not a leg), and a flood at home is not a complaint about something the store sold.
+`read_message()` in `gen/understand.py` fixes two labels the small model gets wrong: "the leg of my table snapped" becomes a complaint (furniture broke, not a leg), and a flood at home is not a complaint about something the store sold.
 
 | Intent | Path |
 |---|---|
 | `PRODUCT_RECOMMENDATION` | Search the helpful `furniture`, not the problem words ("leg" would find table legs). Spare parts are dropped. |
 | `PRODUCT_SEARCH`, `PRODUCT_COMPARISON` | Search the question. Check whether the `item` is sold. |
-| `PURCHASE`, or a buying phrase after a list | Find the product or products the customer means and add them to the cart. One product: show its facts, a product page link and next-step buttons. |
+| `PURCHASE`, a buying phrase after a list, or a wish to buy a named product | Find the product or products the customer means and add them to the cart. One product: show its facts, a product page link and next-step buttons. |
 | `STORE_INFORMATION`, `ORDER_SUPPORT`, `COMPLAINT` | Policy sections only. Complaints see only the warranty and returns policies. |
 | `CASUAL_CONVERSATION` | A short friendly reply with no search and no store facts. |
 | `GENERAL_QUESTION` | "I don't know", with no second LLM call. |
 
-**Which products were listed** (`listed()`): the products of the last reply, in the order the reply shows them. The model reorders search results, so "the second one" must follow the text, not the search rank.
+**Which products were listed** (`listed()` in `gen/picking.py`): the products of the last reply, in the order the reply shows them. The model reorders search results, so "the second one" must follow the text, not the search rank.
+
+**Is it a pick?** Three signs, any one is enough: the model says `PURCHASE`; a buying phrase follows a list ("the second one", "2"); or the customer wants to buy a product they name ("I want to buy the POÄNG rocking-chair"). The last two are plain Python, because the small model often misses them.
 
 **Picking** (`pick_products()`): several at once ("the first and the third", "both"), otherwise one: a product name first ("the HATTEFJÄLL"), then "cheapest", "most expensive" or "the last one", then a position ("2", "1st", "the second one", "number 3"). If several products were listed and none of these match, the bot asks which one.
 
@@ -86,7 +106,7 @@ Python fixes two labels the small model gets wrong: "the leg of my table snapped
 
 Embeds the text and returns the top 5 chunks plus the top 2 policy sections, each with a cosine score. Policies are searched separately so about 3,000 products cannot crowd them out. Repeated products (same name and price) are dropped, and at most 4 chunks go to the answer call. If the best score is below 0.30 and no product is named, the reply is "I don't know".
 
-### 5. Check stock: `is_missing()`
+### 5. Check stock: `is_missing()` in `gen/catalogue.py`
 
 Compares the main noun of the request with the main noun of every product type and with the category names. A "Laptop table" is a table, so the store does not sell laptops. A few synonyms are mapped (crib to cot, almirah to wardrobe).
 
