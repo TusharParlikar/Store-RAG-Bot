@@ -1,497 +1,436 @@
-"""Answer one customer message: understand it, pick a path, search, call the LLM, clean up the reply.
+"""Answer one customer message. answer() is the only function the chat page calls.
 
-Order of work in answer(): understand() -> purchase / chit-chat / off-topic shortcuts -> search ->
-stock check -> answer call -> "not available" line, product links and next step.
-The prompt text is in gen/prompts.py.
+The steps, in order. Each is one function below or one module in gen/:
+
+  1. Cart commands ("check out", "show my cart")         gen/cart.py        no LLM
+  2. Read the message: intent, feeling, needs            gen/understand.py  LLM call 1
+  3. A pick ("the second one") goes into the cart        gen/picking.py, pick_reply()
+  4. Chit-chat and off-topic questions end here          casual_reply()
+  5. Search products and policies                        retrieve(), rag/index.py
+  6. Stock check, then the task for the model            gen/catalogue.py, task_line()
+  7. Write the reply                                     write()            LLM call 2
+  8. Add the "not available" line, links, next step      finish()
 """
-import csv
-import json
-import re
-import unicodedata
-from datetime import datetime
-from functools import lru_cache
-from pathlib import Path
 
-from openai import OpenAI
+import csv
+import re
+from datetime import datetime
+from pathlib import Path
 
 import config
 from gen import cart as cart_
-from gen.prompts import (ACKNOWLEDGE, CASUAL, CASUAL_NEXT_STEP, CONGRATS, FOLLOW_UP, IDK, NEED_TASK,
-                         NEXT_STEP, NOT_AVAILABLE, POLICY_FORMAT, PRODUCT_FORMAT, PURCHASE_TASK, SYMPATHY,
-                         SYSTEM, UNAVAILABLE_TASK, UNDERSTAND)
-from nlp.chunks import inr, product_chunks
+from gen.catalogue import NOT_FURNITURE, PART, distinct, is_missing, named_products, product_links
+from gen.llm import llm
+from gen.picking import BUY, buys_by_name, ordinals, pick_products
+from gen.prompts import (
+    ACKNOWLEDGE,
+    CASUAL,
+    CASUAL_NEXT_STEP,
+    CONGRATS,
+    FOLLOW_UP,
+    IDK,
+    NEED_TASK,
+    NEXT_STEP,
+    NOT_AVAILABLE,
+    POLICY_FORMAT,
+    PRODUCT_FORMAT,
+    PURCHASE_TASK,
+    SYMPATHY,
+    SYSTEM,
+    UNAVAILABLE_TASK,
+)
+from gen.understand import parse_understanding, read_message
+from nlp.chunks import inr
 from rag.index import search
 
-# Below this best-match score the question is not about the store: answer without the LLM.
-# Picked by testing off-topic questions (see `python -m gen.answer`).
+# --------------------------------------------------------------------------------------
+# Settings
+# --------------------------------------------------------------------------------------
+
+# If the best search match scores below this, the question is not about the store.
+# The bot then says "I don't know" without a second LLM call.
 MIN_SCORE = 0.30
 
-# Chunks sent to the answer call. It lists at most 3 products; on a laptop CPU every extra chunk
-# (~100 tokens) adds about 2 seconds of prompt reading.
+# How many chunks go to the answer call. It lists at most 3 products, and on a laptop
+# CPU every extra chunk (about 100 tokens) adds about 2 seconds of reading.
 MAX_CONTEXT = 4
 
+# How many results a need search looks through before spare parts are dropped.
+NEED_SEARCH_SIZE = 20
 
+# Temperature for policy answers and warranty checks: stay close to the written facts.
+FACTS_TEMPERATURE = 0.3
+
+# A chit-chat reply longer than this is a poem or an essay the customer asked for.
+CASUAL_MAX_CHARS = 250
+
+# Intents that are answered from the policy files only.
+POLICY_INTENTS = {"STORE_INFORMATION", "ORDER_SUPPORT", "COMPLAINT"}
+
+# A complaint sees only these policies. With the expiry policy in view, the small
+# model once invented a "lifetime guarantee".
+COMPLAINT_POLICIES = ("warranty.md", "returns.md")
+
+# Where requests for products the store does not sell are logged.
 REQUESTS = Path(__file__).resolve().parent.parent / "data" / "requests" / "requests.csv"
 
 
-INTENTS = {"PRODUCT_SEARCH", "PRODUCT_RECOMMENDATION", "PRODUCT_COMPARISON", "STORE_INFORMATION",
-           "PURCHASE", "ORDER_SUPPORT", "COMPLAINT", "CASUAL_CONVERSATION", "GENERAL_QUESTION"}
-POLICY_INTENTS = {"STORE_INFORMATION", "ORDER_SUPPORT", "COMPLAINT"}
+# --------------------------------------------------------------------------------------
+# The main function
+# --------------------------------------------------------------------------------------
 
 
-_client = None
+def answer(
+    question: str,
+    extra_context: str = "",
+    history: list[str] = (),
+    shown: list[dict] = (),
+    on_token=None,
+    cart: list[dict] = (),
+) -> dict:
+    """Answer one message.
 
+    question       what the customer typed
+    extra_context  a computed fact for the model, such as a warranty check
+    history        the customer's earlier messages, oldest first
+    shown          the products in the bot's last reply, so "the second one" can be resolved
+    on_token       called with the text so far while the reply is written (for live display)
+    cart           what the customer has picked so far
 
-def llm(messages: list[dict], temperature: float = config.LLM_TEMPERATURE, json_mode: bool = False,
-        on_token=None) -> str:
-    """One chat call. With on_token, the reply is streamed and on_token gets the text so far after each piece."""
-    global _client
-    _client = _client or OpenAI(base_url=config.LLM_BASE_URL, api_key=config.LLM_API_KEY)
-    extra = {}
-    if json_mode:
-        extra["response_format"] = {"type": "json_object"}
-    if config.LLM_KEEP_ALIVE:
-        extra["extra_body"] = {"keep_alive": config.LLM_KEEP_ALIVE}
-    # reasoning_effort="none" stops Qwen3 thinking (about 30x faster); max_tokens stops runaway replies.
-    out = _client.chat.completions.create(model=config.LLM_MODEL, messages=messages, temperature=temperature,
-                                          max_tokens=400, reasoning_effort=config.LLM_REASONING_EFFORT,
-                                          stream=on_token is not None, **extra)
-    if on_token is None:
-        text = out.choices[0].message.content or ""
-    else:
-        text = ""
-        for chunk in out:
-            if chunk.choices and chunk.choices[0].delta.content:
-                text += chunk.choices[0].delta.content
-                on_token(text)
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
-    return re.sub(r"/(no_)?think", "", text, flags=re.I).strip()  # Ollama sometimes echoes Qwen3's switch
-
-
-def log_request(item: str, question: str):
-    REQUESTS.parent.mkdir(exist_ok=True)
-    new = not REQUESTS.exists()
-    with REQUESTS.open("a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if new:
-            w.writerow(["time", "item", "question"])
-        w.writerow([datetime.now().isoformat(timespec="seconds"), item, question])
-
-
-# Words the extractor sometimes returns that are needs or policies, never a missing product.
-# ponytail: hand list; grows if the request log shows false "not available" replies.
-NOT_PRODUCTS = {"none", "pain", "ache", "hurt", "relief", "comfort", "support", "warranty", "guarantee", "return", "returns",
-                "refund", "window", "policy", "delivery", "price", "cost", "order", "assembly", "furniture", "product"}
-
-
-# Body parts and medical items that are also furniture part names ("Leg", "Arm"); dropped from need searches.
-NOT_FURNITURE = {"leg", "legs", "arm", "arms", "foot", "feet", "hand", "hands", "knee", "ankle", "wrist", "neck",
-                 "brace", "cast", "crutch", "crutches", "bandage", "splint", "support", "rest"}
-
-
-# Spare parts ("STOCKSUND - Legs for armchair") are no help to someone describing a need.
-PART = re.compile(r"(legs?|supporting leg|armrest|backrest|back rest|cover|slipcover|knob|handle|door|drawer|shelf|"
-                  r"hinge|frame|cushion cover|glass door|plinth|rail)\b", re.I)
-
-
-def head_noun(kind: str) -> str:
-    """Main word of a product type: "Office chair with armrests" -> chair, "Laptop table, 100x36 cm" -> table."""
-    words = re.findall(r"[a-z]+", re.split(r"\b(?:with|for|in|that|which)\b|,", kind.lower())[0])
-    return words[-1] if words else ""
-
-
-@lru_cache(maxsize=1)
-def catalogue_words() -> frozenset[str]:
-    """What kinds of product the store has: the main word of every product type, plus category words.
-
-    Main words only, so a "Laptop table" does not make the store look like it sells laptops.
+    Returns a dict:
+      text           the reply
+      sources        the products and policies the reply is based on
+      missing        the product asked for that the store does not sell, or None
+      understanding  what LLM call 1 understood
+      cart           the cart to keep for the next message
+      product        only when the customer picked exactly one product
     """
-    heads = {head_noun(c["name"].partition(" - ")[2]) for c in product_chunks()}
-    return frozenset(heads | set(re.findall(r"[a-z]+", " ".join(c["category"] for c in product_chunks()).lower())))
+    cart = list(cart)
+    u = parse_understanding("")  # empty understanding, until the message is read
+
+    def reply(text, sources=(), missing=None, **more):
+        """Build the result. Reads `u` and `cart` as they are at the time of the call."""
+        return {
+            "text": text,
+            "sources": list(sources),
+            "missing": missing,
+            "understanding": u,
+            "cart": cart,
+            **more,
+        }
+
+    # ---- 1. Cart commands need no LLM -------------------------------------------------
+    about_cart = cart_.command(question, cart)
+    if about_cart:
+        text, cart = about_cart
+        return reply(text)
+
+    # ---- 2. Read the message ----------------------------------------------------------
+    # A warranty check already carries its facts, so it skips this call.
+    if not extra_context:
+        u = read_message(question, history)
+    intent = u["intent"]
+    about = about_line(u)
+
+    # ---- 3. A pick goes into the cart -------------------------------------------------
+    # The customer keeps shopping until they say "check out".
+    # Three ways to see a pick: the model says so, a buying phrase follows a list
+    # ("the second one"), or the customer wants to buy a product they name.
+    after_a_list = shown and BUY.search(ordinals(question))
+    is_pick = intent == "PURCHASE" or after_a_list or buys_by_name(question)
+    if is_pick:
+        picked = pick_products(question, list(shown))
+
+        if picked:
+            cart, new = cart_.add(cart, picked)
+            text = pick_reply(question, picked, about, on_token)
+            text = f"{text}\n\n{cart_.added_line(cart, new)}"
+            if len(picked) == 1:
+                return reply(text, picked, product=picked[0])
+            return reply(text, picked)
+
+        if shown:
+            # "I'll get that" after several suggestions: ask instead of guessing.
+            options = "\n".join(
+                f"{number}. **{product['name']}** – {inr(product['price'])}"
+                for number, product in enumerate(shown, 1)
+            )
+            return reply(f"Great choice! Which one would you like?\n{options}", shown)
+
+        # A kind of product, not a specific one ("I want to buy a sofa"): search as usual.
+        intent = "PRODUCT_SEARCH"
+
+    # ---- 4. Chit-chat and off-topic questions -----------------------------------------
+    if intent == "CASUAL_CONVERSATION":
+        return reply(casual_reply(question))
+    if intent == "GENERAL_QUESTION":
+        return reply(IDK)
+
+    # ---- 5. Search --------------------------------------------------------------------
+    named = named_products(question)  # products mentioned by name get direct links later
+    hits, policy, need = retrieve(question, u, intent, extra_context)
+
+    # Nothing in the data is close to the question. (A need or a named product never
+    # ends here: those have their own search.)
+    can_be_off_topic = not need and not extra_context and not named
+    if can_be_off_topic and hits[0]["score"] < MIN_SCORE:
+        return reply(IDK)
+
+    if policy:
+        hits = [hit for hit in hits if hit["kind"] == "rule"]
+        if intent == "COMPLAINT":
+            relevant = [hit for hit in hits if hit["source"].startswith(COMPLAINT_POLICIES)]
+            hits = relevant or hits
+    elif not extra_context:
+        hits = distinct(hits)[:MAX_CONTEXT]
+
+    # ---- 6. Stock check, then the task for the model ----------------------------------
+    item = u["item"]
+    asks_for_product = intent.startswith("PRODUCT") and not policy and item
+    missing = item if asks_for_product and is_missing(item) else None
+    task = task_line(u, need, missing, history, question)
+
+    # ---- 7. Write the reply -----------------------------------------------------------
+    # Policy answers and warranty checks are "facts only": plain sentences, low temperature.
+    facts_only = bool(policy or extra_context)
+    # Policy answers do not get the `about` line: it made the small model say "I don't know".
+    text = write(question, hits, extra_context, "" if policy else about, task, facts_only, on_token)
+
+    # ---- 8. Clean up ------------------------------------------------------------------
+    if missing:
+        log_request(missing, question)
+    text = finish(text, missing, named, lists_products=not facts_only)
+    return reply(text, hits, missing)
 
 
-# Common Indian/US words for product types the catalogue names differently.
-# ponytail: hand list; grows if the request log shows false "not available" replies.
-SYNONYMS = {"crib": "cot", "couch": "sofa", "closet": "wardrobe", "almirah": "wardrobe", "cupboard": "cabinet"}
+# --------------------------------------------------------------------------------------
+# The steps
+# --------------------------------------------------------------------------------------
 
 
-def in_catalogue(word: str) -> bool:
-    word = SYNONYMS.get(word, word)
-    words = catalogue_words()
-    return any(w in words for w in (word, word + "s", word.removesuffix("s"), word.removesuffix("es")))
+def about_line(u: dict) -> str:
+    """What call 1 understood, as one line for call 2.
 
-
-def parse_understanding(reply: str) -> dict:
-    """Clean the model's JSON. Anything missing or malformed falls back to empty values (intent "")."""
-    match = re.search(r"\{.*\}", reply, re.S)
-    try:
-        raw = json.loads(match.group()) if match else {}
-    except json.JSONDecodeError:
-        raw = {}
-    raw = raw if isinstance(raw, dict) else {}
-
-    def text(key):
-        v = raw.get(key)
-        return v.strip(" ./*\"'").lower() if isinstance(v, str) else ""
-
-    def items(key):
-        v = raw.get(key)
-        v = v if isinstance(v, list) else [v] if isinstance(v, str) else []
-        return [s.strip().lower() for s in v if isinstance(s, str) and s.strip()]
-
-    intent = text("intent").upper()
-    return {"intent": intent if intent in INTENTS else "", "item": text("item"), "problem": text("problem"),
-            "emotion": text("emotion") or "neutral", "sentiment": text("sentiment") or "neutral",
-            "furniture": items("furniture"), "constraints": items("constraints"),
-            "meaning": raw["meaning"].strip() if isinstance(raw.get("meaning"), str) else ""}
-
-
-def understand(question: str, history: list[str] = ()) -> dict:
-    """LLM #1 (temperature 0): intent, item, problem, emotion, sentiment, furniture, constraints, meaning."""
-    earlier = " | ".join(h[:300] for h in history[-3:])
-    msg = (f"Earlier messages: {earlier}\n" if earlier else "") + f"Customer: {question}"
-    # Instructions in the system message: in one user message the model echoes "/no_think" instead of answering.
-    return parse_understanding(llm([{"role": "system", "content": UNDERSTAND}, {"role": "user", "content": msg}],
-                                   temperature=0, json_mode=True))
-
-
-PURCHASED = re.compile(r"\b(bought|ordered|order|delivered|delivery|arrived|purchased?|refund|replace(ment)?)\b", re.I)
-BROKEN = re.compile(r"\b(broke|broken|snapped|cracked|came off|fell off|wobbly|damaged|scratched|faulty|stopped working)\b", re.I)
-
-
-def is_broken_furniture(text: str) -> bool:
-    """A piece of furniture broke ("the leg of my table snapped"), not a body part ("my leg is broken")."""
-    words = set(re.findall(r"[a-z]+", text.lower())) - NOT_FURNITURE - NOT_PRODUCTS
-    return bool(BROKEN.search(text)) and any(in_catalogue(w) for w in words)
-
-
-def is_missing(kind: str) -> bool:
-    """True when the store has nothing of this kind: its main word is in no product name or category."""
-    head = re.findall(r"[a-z]+", re.split(r"\b(?:with|for|in|that|which)\b", kind)[0])  # "bunk bed with a slide" -> bunk, bed
-    if not head or NOT_PRODUCTS & set(re.findall(r"[a-z]+", kind)):
-        return False
-    return not in_catalogue(head[-1])
-
-
-# Buying words right after the bot listed products. The small model often reads "ok I'll get that" as the old need again.
-BUY = re.compile(r"\b(i'?ll (take|get|buy|have)|i ?will (take|get|buy)|(buy|take|get|want) (it|this|that|this one|that one)|"
-                 r"(that|this|the (first|second|third)) one|add (it|this|that)|(number|option|#)\s*[1-3]|"
-                 r"(take|get|buy|want|choose|pick|like)\b[^.?!]{0,20}\b(first|second|third|1st|2nd|3rd))\b"
-                 r"|^\s*[1-3]\s*\.?\s*$"  # or just the number from the list
-                 r"|^\s*(the\s+)?(first|second|third|1st|2nd|3rd)(\s+one)?\s*[.!]?\s*$"  # or "1st", "the second one"
-                 r"|\b(the\s+)?(cheapest|least expensive|most expensive|priciest)(\s+one)?\b|\b(the last|last one)\b"
-                 r"|\b(take|get|buy|want|add)\b[^.?!]{0,20}\b(both|all)\b|^\s*both\b|\badd\b.{0,40}\b(cart|basket)\b", re.I)
-
-
-def ordinals(text: str) -> str:
-    """Join "1 st" into "1st", as customers type it both ways."""
-    return re.sub(r"\b([1-3])\s+(st|nd|rd)\b", r"\1\2", text, flags=re.I)
-ORDINAL = re.compile(r"\b(first|1st|second|2nd|third|3rd)\b|(?:number|no\.?|#|option)\s*([1-3])\b|^\s*([1-3])\s*\.?\s*$")
-
-
-def plain(s: str) -> str:
-    """Lowercase without accents, so "hattefjall" matches "HATTEFJÄLL"."""
-    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
-
-
-def pick_product(question: str, shown: list[dict]) -> dict | None:
-    """The one product the customer means: named (suggested earlier first), "the second one", or the only one shown."""
-    q = plain(ordinals(question))
-    for h in [*shown, *(h for h in search(question, k=10) if h["kind"] == "product")]:
-        brand = plain(h["name"].partition(" - ")[0])
-        if brand and re.search(rf"\b{re.escape(brand)}\b", q):
-            return h
-    if shown and re.search(r"\b(cheapest|least expensive|lowest price)\b", q):
-        return min(shown, key=lambda h: h["price"])
-    if shown and re.search(r"\b(most expensive|priciest|best quality)\b", q):
-        return max(shown, key=lambda h: h["price"])
-    if shown and re.search(r"\b(the last|last one)\b", q):
-        return shown[-1]
-    m = ORDINAL.search(q)
-    if m and shown:
-        i = ("first", "1st", "second", "2nd", "third", "3rd").index(m[1]) // 2 if m[1] else int(m[2] or m[3]) - 1
-        return shown[i] if i < len(shown) else None
-    return shown[0] if len(shown) == 1 else None
-
-
-def listed(reply: str, sources: list[dict]) -> list[dict]:
-    """The products a reply actually lists, in the order the reply lists them.
-
-    "The second one" means the second in the text. The model reorders products, so search order would be wrong.
+    With it, the answer addresses the reason behind the request, not only its words.
     """
-    found = [s for s in sources if s.get("kind") == "product" and s["name"] in reply and inr(s["price"]) in reply]
-    return sorted(found, key=lambda s: (reply.find(s["name"]), reply.find(inr(s["price"]))))
+    parts = [u["meaning"]]
+    if u["problem"]:
+        parts.append(f"Situation: {u['problem']}.")
+    if u["emotion"] not in ("neutral", "casual"):
+        parts.append(f"Feeling: {u['emotion']}.")
+    if u["constraints"]:
+        parts.append(f"Limits: {', '.join(u['constraints'])}.")
+
+    about = " ".join(part for part in parts if part)
+    return f"What the customer needs: {about}\n" if about else ""
 
 
-def pick_products(question: str, shown: list[dict]) -> list[dict]:
-    """Every product the customer picks in one message: "the first and the third", "MALM and HEMNES", "both"."""
-    q = plain(ordinals(question))
-    if shown and re.search(r"\b(both|all of them|all (two|three|3|2)|everything)\b", q):
-        return list(shown)
-    named = [h for h in shown if any(re.search(rf"\b{re.escape(n)}\b", q) for n in product_names(h))]
-    if len(named) > 1:
-        return named
-    spots = [("first", "1st", "second", "2nd", "third", "3rd").index(m[1]) // 2 if m[1] else int(m[2] or m[3]) - 1
-             for m in ORDINAL.finditer(q)]
-    spots = list(dict.fromkeys(i for i in spots if i < len(shown)))
-    if len(spots) > 1:
-        return [shown[i] for i in spots]
-    one = pick_product(question, shown)
-    return [one] if one else []
+def pick_reply(question: str, picked: list[dict], about: str, on_token=None) -> str:
+    """The reply to a pick.
 
+    One product: a few warm words from the LLM, then its exact facts from the data.
+    Several products: a plain list, no LLM.
+    """
+    if len(picked) > 1:
+        rows = [f"- **{product['name']}** – {inr(product['price'])}" for product in picked]
+        return "Good choices:\n" + "\n".join(rows)
 
-def purchase_reply(question: str, product: dict, about: str, on_token=None) -> str:
-    """Warm words from the LLM, then the exact facts from the data, then the next step."""
-    intro = llm([
-        {"role": "system", "content": SYSTEM + POLICY_FORMAT},
-        {"role": "user", "content": f"Context:\n[{product['source']}] {product['text']}\n\n{about}"
-                                    f"{PURCHASE_TASK.format(name=product['name'])}Customer: {question}"},
-    ], on_token=on_token)
+    product = picked[0]
+
+    # The warm words. The model sees only this one product.
+    context = f"[{product['source']}] {product['text']}"
+    task = PURCHASE_TASK.format(name=product["name"])
+    intro = llm(
+        [
+            {"role": "system", "content": SYSTEM + POLICY_FORMAT},
+            {
+                "role": "user",
+                "content": f"Context:\n{context}\n\n{about}{task}Customer: {question}",
+            },
+        ],
+        on_token=on_token,
+    )
+
+    # The facts, straight from the data so they are always exact.
     months = product["warranty_months"]
     years = f" ({months // 12} years)" if months >= 12 and months % 12 == 0 else ""
-    facts = [f"- Price: {inr(product['price'])}", f"- Warranty: {months} months{years}",
-             f"- Category: {product['category']}"]
+    facts = [
+        f"- Price: {inr(product['price'])}",
+        f"- Warranty: {months} months{years}",
+        f"- Category: {product['category']}",
+    ]
     if product.get("good_for"):
         facts.append(f"- Good for: {product['good_for'].replace('-', ' ')}")
     if product.get("goes_with"):
         facts.append(f"- Goes well with: {product['goes_with']}")
     if product.get("link"):
-        facts.append(f"- Product page: [{product['name'].partition(' - ')[0]}]({product['link']})")
+        short_name = product["name"].partition(" - ")[0]
+        facts.append(f"- Product page: [{short_name}]({product['link']})")
+
     return f"{intro}\n\n**{product['name']}**\n" + "\n".join(facts)
 
 
-def said_now(problem: str, question: str) -> bool:
-    """True when the current message itself describes the problem, not only an earlier one."""
-    stems = {w[:5] for w in re.findall(r"[a-z]+", problem.lower()) if len(w) > 3}  # "stress" matches "stressed"
-    return not stems or bool(stems & {w[:5] for w in re.findall(r"[a-z]+", question.lower())})
+def casual_reply(question: str) -> str:
+    """A short friendly reply to chit-chat, with no search and no store facts.
 
-
-# Product names that are also everyday words or first names: they count only when typed in capitals ("LACK table"),
-# so "I lack space" or "hallo" do not pull in products.
-COMMON_WORD_NAMES = {"lack", "hallo", "urban", "utter", "harry", "erik", "glenn", "len", "hol", "pax", "stig",
-                     "jules", "micke", "nisse", "cilla", "terje", "bror", "rast", "olov", "olaus"}
-
-
-def product_names(h: dict) -> list[str]:
-    """Plain product names of a chunk: "STENSELE / RÖNNINGE - Table" -> ["stensele", "ronninge"]."""
-    return [plain(n.strip()) for n in h["name"].partition(" - ")[0].split("/") if n.strip()]
-
-
-@lru_cache(maxsize=1)
-def catalogue_by_name() -> dict[str, list[dict]]:
-    out = {}
-    for c in product_chunks():
-        for n in product_names(c):
-            out.setdefault(n, []).append(c)
-    return out
-
-
-def named_products(question: str) -> list[dict]:
-    """Products the customer names ("MALM bed"): best search matches first, at most 3 per name and 6 in all."""
-    q = plain(question)
-    caps = unicodedata.normalize("NFKD", question).encode("ascii", "ignore").decode()
-    names = [n for n in catalogue_by_name() if re.search(rf"\b{re.escape(n)}\b", q)
-             and (n not in COMMON_WORD_NAMES or re.search(rf"\b{re.escape(n.upper())}\b", caps))]
-    if not names:
-        return []
-    ranked = [h for h in search(question, k=20) if h["kind"] == "product"]
-    out, seen = [], set()
-    for n in names:
-        picked = 0
-        for h in [h for h in ranked if n in product_names(h)] + catalogue_by_name()[n]:
-            if picked < 3 and h["name"] not in seen:  # colour variants share a name: one link each
-                seen.add(h["name"])
-                out.append(h)
-                picked += 1
-    return out[:6]
-
-
-def product_links(products: list[dict]) -> str:
-    rows = [f"- [{h['name']}]({h['link']}) – {inr(h['price'])}" for h in products if h.get("link")]
-    return "\n\n**Product pages:**\n" + "\n".join(rows) if rows else ""
-
-
-def distinct(hits) -> list[dict]:
-    """Drop repeats: the catalogue lists some products twice (same name and price, different item id)."""
-    seen, out = set(), []
-    for h in hits:
-        key = (h.get("name") or h["source"], h.get("price"))
-        if key not in seen:
-            seen.add(key)
-            out.append(h)
-    return out
-
-
-def answer(question: str, extra_context: str = "", history: list[str] = (), shown: list[dict] = (),
-           on_token=None, cart: list[dict] = ()) -> dict:
-    """Returns {text, sources, missing, understanding, cart}, plus `product` when the customer picked one product.
-
-    extra_context carries computed facts such as a warranty check; history is the customer's earlier messages;
-    shown is the products in the bot's last reply, so "I'll take the second one" can be resolved.
-    on_token(text_so_far) is called while the reply is written, so the page can show it live.
-    cart is what the customer has picked so far; the returned cart is the one to keep.
+    Not streamed: the length check below needs the whole reply, and chit-chat is short.
     """
-    cart = list(cart)
-    about_cart = cart_.command(question, cart)  # check out, show, remove, empty: no LLM needed
-    if about_cart:
-        return {"text": about_cart[0], "sources": [], "missing": None, "understanding": parse_understanding(""),
-                "cart": about_cart[1]}
-    r = _answer(question, extra_context, history, shown, on_token, cart)
-    r.setdefault("cart", cart)
-    return r
+    text = llm([{"role": "system", "content": CASUAL}, {"role": "user", "content": question}])
+
+    # Chit-chat is 1 or 2 sentences. More means it wrote the poem or essay it was asked for.
+    if len(text) > CASUAL_MAX_CHARS or text.count("\n") >= 2:
+        return "I'd love to, but I can only help with our furniture store. " + CASUAL_NEXT_STEP
+
+    # The small model forgets to steer back to shopping.
+    # Skip the extra line when the reply already ends by asking how it can help.
+    lowered = text.lower()
+    steers_back = "furniture" in lowered or "home" in lowered or text.rstrip().endswith("?")
+    if not steers_back:
+        text += "\n\n" + CASUAL_NEXT_STEP
+    return text
 
 
-def _answer(question: str, extra_context: str, history: list[str], shown: list[dict], on_token, cart: list[dict]) -> dict:
-    u = parse_understanding("") if extra_context else understand(question, history)
-    if u["intent"] in ("PRODUCT_RECOMMENDATION", "") and is_broken_furniture(question):
-        u["intent"] = "COMPLAINT"  # the small model reads "the leg of my table snapped" as an injury
-    elif u["intent"] == "COMPLAINT" and not (is_broken_furniture(question) or PURCHASED.search(question)):
-        u["intent"] = "PRODUCT_RECOMMENDATION"  # a flood or accident at home is not about something we sold
-    intent = u["intent"]
+def retrieve(
+    question: str, u: dict, intent: str, extra_context: str
+) -> tuple[list[dict], bool, bool]:
+    """Search, and decide what kind of answer this is.
 
-    # LLM #2 gets what LLM #1 understood, so it answers the reason behind the request, not only the words.
-    about = " ".join(filter(None, [
-        u["meaning"],
-        u["problem"] and f"Situation: {u['problem']}.",
-        u["emotion"] not in ("neutral", "casual") and f"Feeling: {u['emotion']}.",
-        u["constraints"] and f"Limits: {', '.join(u['constraints'])}.",
-    ]))
-    about = f"What the customer needs: {about}\n" if about else ""
-
-    if intent == "PURCHASE" or shown and BUY.search(ordinals(question)):
-        picked = pick_products(question, list(shown))
-        if picked:  # a pick goes into the cart; the customer keeps shopping until they say "check out"
-            new_cart, new = cart_.add(cart, picked)
-            if len(picked) == 1:
-                text = purchase_reply(question, picked[0], about, on_token)
-            else:
-                text = "Good choices:\n" + "\n".join(f"- **{h['name']}** – {inr(h['price'])}" for h in picked)
-            return {"text": f"{text}\n\n{cart_.added_line(new_cart, new)}", "sources": picked, "missing": None,
-                    "understanding": u, "cart": new_cart, **({"product": picked[0]} if len(picked) == 1 else {})}
-        if shown:  # "I'll get that" after several suggestions: ask instead of guessing
-            options = "\n".join(f"{i}. **{h['name']}** – {inr(h['price'])}" for i, h in enumerate(shown, 1))
-            return {"text": f"Great choice! Which one would you like?\n{options}", "sources": list(shown),
-                    "missing": None, "understanding": u}
-        intent = "PRODUCT_SEARCH"  # a kind of product, not a specific one: search as usual
-
-    if intent == "CASUAL_CONVERSATION":  # chit-chat: no search, no store facts
-        # Not streamed: the poem check below runs on the whole reply, and chit-chat is short anyway.
-        text = llm([{"role": "system", "content": CASUAL}, {"role": "user", "content": question}])
-        if len(text) > 250 or text.count("\n") >= 2:  # chit-chat is 1 or 2 sentences; more is a poem or essay
-            text = "I'd love to, but I can only help with our furniture store. " + CASUAL_NEXT_STEP
-        # The small model forgets to steer back; skip when it already ends by asking how it can help.
-        if "furniture" not in text.lower() and "home" not in text.lower() and not text.rstrip().endswith("?"):
-            text += "\n\n" + CASUAL_NEXT_STEP
-        return {"text": text, "sources": [], "missing": None, "understanding": u}
-    if intent == "GENERAL_QUESTION":
-        return {"text": IDK, "sources": [], "missing": None, "understanding": u}
-
-    named = named_products(question)  # products the customer mentions by name get direct links
+    Returns (hits, policy, need):
+      hits    the chunks to answer from, best first
+      policy  True when the answer must come from the policy files only
+      need    True when the customer described a situation and gets recommendations
+    """
     hits = search(question)
-    # Policy question: give the model only policies, otherwise it lists loosely matching products
-    # ("return window" -> a window table). A policy section beating every product also counts.
-    best_rule = max((h["score"] for h in hits if h["kind"] == "rule"), default=0)
-    rule_wins = best_rule >= max((h["score"] for h in hits if h["kind"] == "product"), default=0)
+
+    # Does a policy section match better than every product?
+    best_rule = max((hit["score"] for hit in hits if hit["kind"] == "rule"), default=0)
+    best_product = max((hit["score"] for hit in hits if hit["kind"] == "product"), default=0)
+    rule_wins = best_rule >= best_product
+
     need = intent == "PRODUCT_RECOMMENDATION" and not extra_context
-    # A "need" with no furniture named, beaten by a policy, is a misread policy question ("what does the warranty not cover?").
-    policy = not extra_context and (intent in POLICY_INTENTS or rule_wins and not (need and u["furniture"]))
+
+    # A policy question gets only policies. Otherwise the model lists loosely matching
+    # products ("return window" finds a window table).
+    # A "need" with no furniture named, beaten by a policy, is a misread policy question
+    # ("what does the warranty not cover?").
+    real_need = need and u["furniture"]
+    policy = not extra_context and (intent in POLICY_INTENTS or (rule_wins and not real_need))
     need = need and not policy
 
     if need:
-        # Search for the furniture that helps, not the words of the problem ("my leg is broken" -> table legs).
-        # No furniture named: search what they need ("a sleep-friendly room for daytime rest").
-        detail = " ".join(u["furniture"]) or u["meaning"].lower() or question.lower()
-        query = " ".join(w for w in re.findall(r"[a-z'-]+", detail) if w not in NOT_FURNITURE) or detail
-        hits = distinct(h for h in search(query, k=20) if not PART.match(h.get("name", "").partition(" - ")[2]))
-        hits = hits[:MAX_CONTEXT]
-    elif hits[0]["score"] < MIN_SCORE and not extra_context and not named:
-        return {"text": IDK, "sources": [], "missing": None, "understanding": u}
-    if policy:
-        hits = [h for h in hits if h["kind"] == "rule"]
-        if intent == "COMPLAINT":  # other policies (expiry) led the small model to invent a "lifetime guarantee"
-            hits = [h for h in hits if h["source"].startswith(("warranty.md", "returns.md"))] or hits
-    elif not extra_context:
-        hits = distinct(hits)[:MAX_CONTEXT]
+        # Search for the furniture that helps, not the words of the problem:
+        # "my leg is broken" would find table legs.
+        # With no furniture named, search what they need ("a quiet room for daytime sleep").
+        wanted = " ".join(u["furniture"]) or u["meaning"].lower() or question.lower()
+        words = [word for word in re.findall(r"[a-z'-]+", wanted) if word not in NOT_FURNITURE]
+        query = " ".join(words) or wanted
 
-    item = u["item"]
-    missing = item if intent.startswith("PRODUCT") and not policy and item and is_missing(item) else None
-    # Sympathy or congratulations once: when the situation only comes from earlier messages, it was already said.
+        found = search(query, k=NEED_SEARCH_SIZE)
+        without_parts = [hit for hit in found if not is_spare_part(hit)]
+        hits = distinct(without_parts)[:MAX_CONTEXT]
+
+    return hits, policy, need
+
+
+def is_spare_part(hit: dict) -> bool:
+    """ "STOCKSUND - Legs for armchair" is a spare part, no help to someone with a need."""
+    product_type = hit.get("name", "").partition(" - ")[2]
+    return bool(PART.match(product_type))
+
+
+def said_now(problem: str, question: str) -> bool:
+    """True when the current message itself describes the problem.
+
+    False when the problem only comes from an earlier message. Words are compared
+    by their first 5 letters, so "stress" matches "stressed".
+    """
+    problem_stems = {word[:5] for word in re.findall(r"[a-z]+", problem.lower()) if len(word) > 3}
+    if not problem_stems:
+        return True
+    question_stems = {word[:5] for word in re.findall(r"[a-z]+", question.lower())}
+    return bool(problem_stems & question_stems)
+
+
+def task_line(u: dict, need: bool, missing: str | None, history: list[str], question: str) -> str:
+    """The instruction for call 2: how to open, and what to do when the product is not sold."""
+    # Sympathy or congratulations is said once. When the situation only comes from
+    # earlier messages, it was already said.
     follow_up = bool(history) and bool(u["problem"]) and not said_now(u["problem"], question)
+
     if follow_up:
         opening = FOLLOW_UP if need else ""
     elif need:
-        opening = {"positive": CONGRATS, "negative": SYMPATHY}.get(u["sentiment"], ACKNOWLEDGE)
+        by_sentiment = {"positive": CONGRATS, "negative": SYMPATHY}
+        opening = by_sentiment.get(u["sentiment"], ACKNOWLEDGE)
     else:
         opening = SYMPATHY if u["sentiment"] == "negative" else ""
-    task = ""
-    if missing:
-        task = UNAVAILABLE_TASK.format(item=missing) + "\n"
-    elif need:
-        task = NEED_TASK.format(opening=opening) + "\n"
-    elif opening:
-        task = f"Task: {opening} Then answer their question.\n"
 
-    context = "\n".join(f"[{h['source']}] {h['text']}" for h in hits)
+    if missing:
+        return UNAVAILABLE_TASK.format(item=missing) + "\n"
+    if need:
+        return NEED_TASK.format(opening=opening) + "\n"
+    if opening:
+        return f"Task: {opening} Then answer their question.\n"
+    return ""
+
+
+def write(
+    question: str,
+    hits: list[dict],
+    extra_context: str,
+    about: str,
+    task: str,
+    facts_only: bool,
+    on_token=None,
+) -> str:
+    """LLM call 2: write the reply from the retrieved chunks."""
+    context = "\n".join(f"[{hit['source']}] {hit['text']}" for hit in hits)
     if extra_context:
         context += "\n" + extra_context
-    text = llm([
-        {"role": "system", "content": SYSTEM + (POLICY_FORMAT if policy or extra_context else PRODUCT_FORMAT)},
-        # Policy answers need only the facts: the understanding line made the small model say "I don't know".
-        {"role": "user", "content": f"Context:\n{context}\n\n{'' if policy else about}{task}Customer: {question}"},
-    ], temperature=0.3 if policy or extra_context else config.LLM_TEMPERATURE,  # facts: stay close to the policy text
-        on_token=on_token)
-    text = re.sub(r"What it is and why it suits them[.:]\s*", "", text)  # the small model sometimes copies the format example
+
+    reply_format = POLICY_FORMAT if facts_only else PRODUCT_FORMAT
+    temperature = FACTS_TEMPERATURE if facts_only else config.LLM_TEMPERATURE
+
+    messages = [
+        {"role": "system", "content": SYSTEM + reply_format},
+        {"role": "user", "content": f"Context:\n{context}\n\n{about}{task}Customer: {question}"},
+    ]
+    return llm(messages, temperature=temperature, on_token=on_token)
+
+
+def finish(text: str, missing: str | None, named: list[dict], lists_products: bool) -> str:
+    """What Python adds after the model has written."""
+    # The small model sometimes copies this line from the format example.
+    text = re.sub(r"What it is and why it suits them[.:]\s*", "", text)
+
     if missing:
-        # Small models often repeat the "we don't sell it" line; drop that leading sentence.
-        text = re.sub(r"(the store|we) (does|do) not (sell|have|carry)[^.]*\.\s*", "", text, flags=re.I).strip()
+        # Small models often repeat "we don't sell it". Drop that sentence, then
+        # put our own honest line first.
+        text = re.sub(
+            r"(the store|we) (does|do) not (sell|have|carry)[^.]*\.\s*", "", text, flags=re.I
+        ).strip()
         text = NOT_AVAILABLE.format(item=missing) + "\n\n" + text
-        log_request(missing, question)
-    if not policy and not extra_context and re.search(r"^1\. \*\*", text, re.M):
-        # The model's own closing offer ("Let me know if...") would repeat ours.
-        text = re.sub(r"\n+(let me know|feel free|would you like|if you)[^\n]*$", "", text, flags=re.I).rstrip()
-        text += product_links(named) + "\n\n" + NEXT_STEP
-    else:
-        text += product_links(named)
-    return {"text": text, "sources": hits, "missing": missing, "understanding": u}
+
+    links = product_links(named)
+
+    has_numbered_list = bool(re.search(r"^1\. \*\*", text, re.M))
+    if lists_products and has_numbered_list:
+        # The model's own closing offer ("Let me know if ...") would repeat ours.
+        text = re.sub(
+            r"\n+(let me know|feel free|would you like|if you)[^\n]*$", "", text, flags=re.I
+        ).rstrip()
+        return text + links + "\n\n" + NEXT_STEP
+
+    return text + links
 
 
-if __name__ == "__main__":
-    u = parse_understanding('```json\n{"intent": "product_search", "item": "Desk Lamp.", "furniture": "desk"}\n```')
-    assert (u["intent"], u["item"], u["furniture"], u["sentiment"]) == ("PRODUCT_SEARCH", "desk lamp", ["desk"], "neutral")
-    assert parse_understanding("not json")["intent"] == "" and parse_understanding('{"intent": "HACK"}')["intent"] == ""
-    shown = [{"name": "HATTEFJÄLL - Office chair"}, {"name": "NILSOVE - Chair"}, {"name": "JÄRVFJÄLLET - Office chair"}]
-    assert pick_product("I'll buy the hattefjall", shown) is shown[0]
-    assert pick_product("tell me more about the second one", shown) is shown[1]
-    assert pick_product("option 3 please", shown) is shown[2]
-    assert pick_product("ok I'll get that", shown) is None and pick_product("ok I'll get that", shown[:1]) is shown[0]
-    assert all(BUY.search(q) for q in ["ok ill get that", "I'll take the second one", "i want this one", "2", " 3. ", "option 1"])
-    assert not any(BUY.search(q) for q in ["do you have a desk?", "my neck hurts", "show me other chairs",
-                                           "tell me more about returns", "I have 2 kids"])
-    assert pick_product("2", shown) is shown[1]
-    assert BUY.search(ordinals("i want to take 1 st chair and this 1st chair")) and not BUY.search("I want 2 chairs")
-    assert all(BUY.search(q) for q in ["1st", "the second one", "third."]) and not BUY.search("first time buying a sofa")
-    priced = [{"name": "A - x", "price": 30}, {"name": "B - y", "price": 10}, {"name": "C - z", "price": 20}]
-    assert pick_product("the cheapest one please", priced)["price"] == 10
-    assert pick_product("most expensive", priced)["price"] == 30 and pick_product("the last one", priced) is priced[2]
-    hits = [{"kind": "product", "name": "A - x", "price": 10}, {"kind": "product", "name": "B - y", "price": 20},
-            {"kind": "product", "name": "C - z", "price": 30}]
-    assert [h["name"][0] for h in listed("1. **B - y** – ₹20 2. **A - x** – ₹10", hits)] == ["B", "A"]
-    assert pick_products("i'll take the first and the third", shown) == [shown[0], shown[2]]
-    assert pick_products("both please", shown[:2]) == shown[:2] and pick_products("the second one", shown) == [shown[1]]
-    assert pick_products("hattefjall and nilsove", shown) == shown[:2]
-    assert BUY.search("the cheapest one please") and BUY.search("actually show me the last one")
-    assert not BUY.search("I bought a sofa last year")
-    assert {n for h in named_products("How much is the MALM bed?") for n in product_names(h)} >= {"malm"}
-    assert named_products("I lack space at home") == [] and named_products("hallo") == []
-    assert any("lack" in product_names(h) for h in named_products("What does the LACK coffee table cost?"))
-    assert pick_product(ordinals("i want to take 1 st chair"), shown) is shown[0]
-    assert said_now("broken arm", "i have broken arm") and not said_now("broken leg", "I need something for my room")
-    assert said_now("stress after work", "I'm feeling stressed") and said_now("", "anything")
-    assert len(distinct([{"name": "A", "price": 1, "source": "x"}, {"name": "A", "price": 1, "source": "y"}])) == 1
-    assert head_noun("Office chair with armrests") == "chair" and head_noun("Laptop table, 100x36 cm") == "table"
-    assert is_broken_furniture("the leg of my new table snapped") and is_broken_furniture("the drawer of my wardrobe broke")
-    assert not any(is_broken_furniture(q) for q in ["my leg is broken", "I broke my arm", "my house got flooded"])
-    for q in ["my leg is broken, suggest me something", "I have back pain from sitting all day",
-              "Do you sell desk lamps?", "Do you have a coffee table?", "What is the capital of France?"]:
-        r = answer(q)
-        print(f"\n> {q}\n{r['text']}\nmissing={r['missing']}")
+def log_request(item: str, question: str):
+    """Keep a record of what customers ask for and the store does not sell."""
+    REQUESTS.parent.mkdir(exist_ok=True)
+    is_new_file = not REQUESTS.exists()
+
+    with REQUESTS.open("a", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        if is_new_file:
+            writer.writerow(["time", "item", "question"])
+        writer.writerow([datetime.now().isoformat(timespec="seconds"), item, question])
