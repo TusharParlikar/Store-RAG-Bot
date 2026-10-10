@@ -1,4 +1,4 @@
-"""Step 5: warranty check in plain Python. The LLM never does date maths."""
+"""Warranty check in plain Python. The LLM never does date maths."""
 import calendar
 from datetime import date, timedelta
 

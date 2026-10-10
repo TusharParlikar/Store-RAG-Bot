@@ -1,6 +1,6 @@
-"""Step 3: build the FAISS index and search it.
+"""Build the FAISS index and search it.
 
-`python -m rag.index` rebuilds index/ and runs the step 3 checks.
+`python -m rag.index` rebuilds index/ and runs a few sample searches.
 """
 import json
 from pathlib import Path

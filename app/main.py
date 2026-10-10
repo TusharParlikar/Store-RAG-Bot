@@ -1,4 +1,4 @@
-"""Step 6: Streamlit chat page. Run from the project root: streamlit run app/main.py"""
+"""Streamlit chat page. Run from the project root: streamlit run app/main.py"""
 import sys
 from datetime import date
 from pathlib import Path

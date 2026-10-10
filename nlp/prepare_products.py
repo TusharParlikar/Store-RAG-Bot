@@ -4,7 +4,7 @@ Source: TidyTuesday 2020-11-03 (IKEA Saudi Arabia scrape, also on Kaggle as
 "IKEA SA Furniture Web Scraping"). Raw prices are in SAR; they are converted to INR
 at SAR_TO_INR and rounded to whole rupees. The original is kept in price_sar.
 
-The raw data has name, category, price and description. The columns project.md
+The raw data has name, category, price and description. The columns the bot
 needs but the dataset lacks (warranty_months, benefit, good_for, goes_with) are
 filled per category from CATEGORY_INFO below. Edit that table to change them.
 """

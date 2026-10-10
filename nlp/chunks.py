@@ -1,4 +1,4 @@
-"""Step 2: read data/, split into chunks, turn chunks into vectors.
+"""Read data/, split into chunks, turn chunks into vectors.
 
 One product row = one chunk. One policy section (## heading) = one chunk.
 Run `python -m nlp.chunks` to print a few chunks.
