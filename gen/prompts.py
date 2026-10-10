@@ -146,7 +146,9 @@ UNAVAILABLE_TASK = ("Task: the store does NOT sell {item}; the customer has alre
 
 NEED_TASK = ("Task: the customer told you about their situation. {opening} "
              "Then suggest up to 3 products from the context that could make them more comfortable, and for each explain "
-             "in one sentence how it helps in their situation. Comfort level only: no medical advice or promises.")
+             "in one sentence how it helps in their situation. Comfort level only: no medical advice or promises. "
+             "The products in the context are the store's closest matches for them, so always suggest from them: "
+             "never reply that you don't know here.")
 
 PURCHASE_TASK = ("Task: the customer wants to buy {name}. In 2 or 3 warm sentences say it is a good choice, "
                  "what it is, and how it suits their situation. Use only features written in the context "
