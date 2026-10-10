@@ -26,3 +26,6 @@ graphify-out/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# The demo video is kept local, not in the repo
+docs/demo.mp4
