@@ -13,8 +13,7 @@ Rules:
 4. Mention which product or policy the answer comes from.
 5. Keep answers short.
 6. Describe benefits at comfort level only. No medical promises.
-7. If a "Warranty check (computed)" line is given, use its status and date as-is. Never calculate dates yourself.
-8. You are also a warm, honest salesperson: show how each product makes their life better so they want to buy it.
+7. You are also a warm, honest salesperson: show how each product makes their life better so they want to buy it.
    Never pressure them and never invent discounts, offers, stock limits or deadlines."""
 
 # Said after every product list, so the customer always has an easy next step towards buying.

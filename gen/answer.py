@@ -58,8 +58,8 @@ MAX_CONTEXT = 4
 # How many results a need search looks through before spare parts are dropped.
 NEED_SEARCH_SIZE = 20
 
-# Temperature for policy answers and warranty checks: stay close to the written facts.
-FACTS_TEMPERATURE = 0.3
+# Temperature for policy answers: stay close to the written facts.
+POLICY_TEMPERATURE = 0.3
 
 # A chit-chat reply longer than this is a poem or an essay the customer asked for.
 CASUAL_MAX_CHARS = 250
@@ -82,7 +82,6 @@ REQUESTS = Path(__file__).resolve().parent.parent / "data" / "requests" / "reque
 
 def answer(
     question: str,
-    extra_context: str = "",
     history: list[str] = (),
     shown: list[dict] = (),
     on_token=None,
@@ -91,7 +90,6 @@ def answer(
     """Answer one message.
 
     question       what the customer typed
-    extra_context  a computed fact for the model, such as a warranty check
     history        the customer's earlier messages, oldest first
     shown          the products in the bot's last reply, so "the second one" can be resolved
     on_token       called with the text so far while the reply is written (for live display)
@@ -126,9 +124,7 @@ def answer(
         return reply(text)
 
     # ---- 2. Read the message ----------------------------------------------------------
-    # A warranty check already carries its facts, so it skips this call.
-    if not extra_context:
-        u = read_message(question, history)
+    u = read_message(question, history)
     intent = u["intent"]
     about = about_line(u)
 
@@ -168,11 +164,11 @@ def answer(
 
     # ---- 5. Search --------------------------------------------------------------------
     named = named_products(question)  # products mentioned by name get direct links later
-    hits, policy, need = retrieve(question, u, intent, extra_context)
+    hits, policy, need = retrieve(question, u, intent)
 
     # Nothing in the data is close to the question. (A need or a named product never
     # ends here: those have their own search.)
-    can_be_off_topic = not need and not extra_context and not named
+    can_be_off_topic = not need and not named
     if can_be_off_topic and hits[0]["score"] < MIN_SCORE:
         return reply(IDK)
 
@@ -181,7 +177,7 @@ def answer(
         if intent == "COMPLAINT":
             relevant = [hit for hit in hits if hit["source"].startswith(COMPLAINT_POLICIES)]
             hits = relevant or hits
-    elif not extra_context:
+    else:
         hits = distinct(hits)[:MAX_CONTEXT]
 
     # ---- 6. Stock check, then the task for the model ----------------------------------
@@ -191,15 +187,13 @@ def answer(
     task = task_line(u, need, missing, history, question)
 
     # ---- 7. Write the reply -----------------------------------------------------------
-    # Policy answers and warranty checks are "facts only": plain sentences, low temperature.
-    facts_only = bool(policy or extra_context)
     # Policy answers do not get the `about` line: it made the small model say "I don't know".
-    text = write(question, hits, extra_context, "" if policy else about, task, facts_only, on_token)
+    text = write(question, hits, "" if policy else about, task, policy, on_token)
 
     # ---- 8. Clean up ------------------------------------------------------------------
     if missing:
         log_request(missing, question)
-    text = finish(text, missing, named, lists_products=not facts_only)
+    text = finish(text, missing, named, lists_products=not policy)
     return reply(text, hits, missing)
 
 
@@ -290,9 +284,7 @@ def casual_reply(question: str) -> str:
     return text
 
 
-def retrieve(
-    question: str, u: dict, intent: str, extra_context: str
-) -> tuple[list[dict], bool, bool]:
+def retrieve(question: str, u: dict, intent: str) -> tuple[list[dict], bool, bool]:
     """Search, and decide what kind of answer this is.
 
     Returns (hits, policy, need):
@@ -307,14 +299,14 @@ def retrieve(
     best_product = max((hit["score"] for hit in hits if hit["kind"] == "product"), default=0)
     rule_wins = best_rule >= best_product
 
-    need = intent == "PRODUCT_RECOMMENDATION" and not extra_context
+    need = intent == "PRODUCT_RECOMMENDATION"
 
     # A policy question gets only policies. Otherwise the model lists loosely matching
     # products ("return window" finds a window table).
     # A "need" with no furniture named, beaten by a policy, is a misread policy question
     # ("what does the warranty not cover?").
     real_need = need and u["furniture"]
-    policy = not extra_context and (intent in POLICY_INTENTS or (rule_wins and not real_need))
+    policy = intent in POLICY_INTENTS or (rule_wins and not real_need)
     need = need and not policy
 
     if need:
@@ -377,19 +369,20 @@ def task_line(u: dict, need: bool, missing: str | None, history: list[str], ques
 def write(
     question: str,
     hits: list[dict],
-    extra_context: str,
     about: str,
     task: str,
-    facts_only: bool,
+    policy: bool,
     on_token=None,
 ) -> str:
-    """LLM call 2: write the reply from the retrieved chunks."""
-    context = "\n".join(f"[{hit['source']}] {hit['text']}" for hit in hits)
-    if extra_context:
-        context += "\n" + extra_context
+    """LLM call 2: write the reply from the retrieved chunks.
 
-    reply_format = POLICY_FORMAT if facts_only else PRODUCT_FORMAT
-    temperature = FACTS_TEMPERATURE if facts_only else config.LLM_TEMPERATURE
+    A policy answer is plain sentences at a low temperature; a product answer is a
+    numbered list at the normal temperature.
+    """
+    context = "\n".join(f"[{hit['source']}] {hit['text']}" for hit in hits)
+
+    reply_format = POLICY_FORMAT if policy else PRODUCT_FORMAT
+    temperature = POLICY_TEMPERATURE if policy else config.LLM_TEMPERATURE
 
     messages = [
         {"role": "system", "content": SYSTEM + reply_format},

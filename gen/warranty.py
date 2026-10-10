@@ -1,8 +1,7 @@
-"""Warranty check in plain Python. The LLM never does date maths.
+"""Warranty check in plain Python. The LLM is never asked to do date maths.
 
 check()     is a purchase still covered, and what is the last covered day?
 report()    the answer for the customer, used by the warranty checker in the sidebar
-describe()  the same as one plain sentence, for handing to the LLM as a fact
 
 python -m gen.warranty    run the checks
 """
@@ -48,16 +47,6 @@ def report(name: str, purchase: date, months: int, today: date | None = None) ->
     else:
         lines.append("Status: **expired**.")
     return "\n\n".join(lines)
-
-
-def describe(name: str, purchase: date, months: int, today: date | None = None) -> str:
-    """The warranty check as one line the LLM can quote without doing any maths."""
-    covered, last_day = check(purchase, months, today)
-    status = "STILL COVERED" if covered else "EXPIRED"
-    return (
-        f"Warranty check (computed): {name}, bought {purchase:%d %b %Y}, "
-        f"{months}-month warranty, last covered day {last_day:%d %b %Y}. Status: {status}."
-    )
 
 
 if __name__ == "__main__":
