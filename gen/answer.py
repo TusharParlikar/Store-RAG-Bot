@@ -15,6 +15,7 @@ from pathlib import Path
 from openai import OpenAI
 
 import config
+from gen import cart as cart_
 from gen.prompts import (ACKNOWLEDGE, CASUAL, CASUAL_NEXT_STEP, CONGRATS, FOLLOW_UP, IDK, NEED_TASK,
                          NEXT_STEP, NOT_AVAILABLE, POLICY_FORMAT, PRODUCT_FORMAT, PURCHASE_TASK, SYMPATHY,
                          SYSTEM, UNAVAILABLE_TASK, UNDERSTAND)
@@ -178,7 +179,8 @@ BUY = re.compile(r"\b(i'?ll (take|get|buy|have)|i ?will (take|get|buy)|(buy|take
                  r"(take|get|buy|want|choose|pick|like)\b[^.?!]{0,20}\b(first|second|third|1st|2nd|3rd))\b"
                  r"|^\s*[1-3]\s*\.?\s*$"  # or just the number from the list
                  r"|^\s*(the\s+)?(first|second|third|1st|2nd|3rd)(\s+one)?\s*[.!]?\s*$"  # or "1st", "the second one"
-                 r"|\b(the\s+)?(cheapest|least expensive|most expensive|priciest)(\s+one)?\b|\b(the last|last one)\b", re.I)
+                 r"|\b(the\s+)?(cheapest|least expensive|most expensive|priciest)(\s+one)?\b|\b(the last|last one)\b"
+                 r"|\b(take|get|buy|want|add)\b[^.?!]{0,20}\b(both|all)\b|^\s*both\b|\badd\b.{0,40}\b(cart|basket)\b", re.I)
 
 
 def ordinals(text: str) -> str:
@@ -212,6 +214,23 @@ def pick_product(question: str, shown: list[dict]) -> dict | None:
     return shown[0] if len(shown) == 1 else None
 
 
+def pick_products(question: str, shown: list[dict]) -> list[dict]:
+    """Every product the customer picks in one message: "the first and the third", "MALM and HEMNES", "both"."""
+    q = plain(ordinals(question))
+    if shown and re.search(r"\b(both|all of them|all (two|three|3|2)|everything)\b", q):
+        return list(shown)
+    named = [h for h in shown if any(re.search(rf"\b{re.escape(n)}\b", q) for n in product_names(h))]
+    if len(named) > 1:
+        return named
+    spots = [("first", "1st", "second", "2nd", "third", "3rd").index(m[1]) // 2 if m[1] else int(m[2] or m[3]) - 1
+             for m in ORDINAL.finditer(q)]
+    spots = list(dict.fromkeys(i for i in spots if i < len(shown)))
+    if len(spots) > 1:
+        return [shown[i] for i in spots]
+    one = pick_product(question, shown)
+    return [one] if one else []
+
+
 def purchase_reply(question: str, product: dict, about: str, on_token=None) -> str:
     """Warm words from the LLM, then the exact facts from the data, then the next step."""
     intro = llm([
@@ -229,8 +248,7 @@ def purchase_reply(question: str, product: dict, about: str, on_token=None) -> s
         facts.append(f"- Goes well with: {product['goes_with']}")
     if product.get("link"):
         facts.append(f"- Product page: [{product['name'].partition(' - ')[0]}]({product['link']})")
-    return (f"{intro}\n\n**{product['name']}**\n" + "\n".join(facts)
-            + "\n\nHow would you like to proceed? Pick an option below.")
+    return f"{intro}\n\n**{product['name']}**\n" + "\n".join(facts)
 
 
 def said_now(problem: str, question: str) -> bool:
@@ -296,13 +314,25 @@ def distinct(hits) -> list[dict]:
 
 
 def answer(question: str, extra_context: str = "", history: list[str] = (), shown: list[dict] = (),
-           on_token=None) -> dict:
-    """Returns {text, sources, missing, understanding}, plus `product` when the customer picked one to buy.
+           on_token=None, cart: list[dict] = ()) -> dict:
+    """Returns {text, sources, missing, understanding, cart}, plus `product` when the customer picked one product.
 
     extra_context carries computed facts such as a warranty check; history is the customer's earlier messages;
     shown is the products in the bot's last reply, so "I'll take the second one" can be resolved.
     on_token(text_so_far) is called while the reply is written, so the page can show it live.
+    cart is what the customer has picked so far; the returned cart is the one to keep.
     """
+    cart = list(cart)
+    about_cart = cart_.command(question, cart)  # check out, show, remove, empty: no LLM needed
+    if about_cart:
+        return {"text": about_cart[0], "sources": [], "missing": None, "understanding": parse_understanding(""),
+                "cart": about_cart[1]}
+    r = _answer(question, extra_context, history, shown, on_token, cart)
+    r.setdefault("cart", cart)
+    return r
+
+
+def _answer(question: str, extra_context: str, history: list[str], shown: list[dict], on_token, cart: list[dict]) -> dict:
     u = parse_understanding("") if extra_context else understand(question, history)
     if u["intent"] in ("PRODUCT_RECOMMENDATION", "") and is_broken_furniture(question):
         u["intent"] = "COMPLAINT"  # the small model reads "the leg of my table snapped" as an injury
@@ -320,10 +350,15 @@ def answer(question: str, extra_context: str = "", history: list[str] = (), show
     about = f"What the customer needs: {about}\n" if about else ""
 
     if intent == "PURCHASE" or shown and BUY.search(ordinals(question)):
-        product = pick_product(question, list(shown))
-        if product:
-            return {"text": purchase_reply(question, product, about, on_token), "sources": [product], "missing": None,
-                    "understanding": u, "product": product}
+        picked = pick_products(question, list(shown))
+        if picked:  # a pick goes into the cart; the customer keeps shopping until they say "check out"
+            new_cart, new = cart_.add(cart, picked)
+            if len(picked) == 1:
+                text = purchase_reply(question, picked[0], about, on_token)
+            else:
+                text = "Good choices:\n" + "\n".join(f"- **{h['name']}** – {inr(h['price'])}" for h in picked)
+            return {"text": f"{text}\n\n{cart_.added_line(new_cart, new)}", "sources": picked, "missing": None,
+                    "understanding": u, "cart": new_cart, **({"product": picked[0]} if len(picked) == 1 else {})}
         if shown:  # "I'll get that" after several suggestions: ask instead of guessing
             options = "\n".join(f"{i}. **{h['name']}** – {inr(h['price'])}" for i, h in enumerate(shown, 1))
             return {"text": f"Great choice! Which one would you like?\n{options}", "sources": list(shown),
@@ -429,6 +464,9 @@ if __name__ == "__main__":
     priced = [{"name": "A - x", "price": 30}, {"name": "B - y", "price": 10}, {"name": "C - z", "price": 20}]
     assert pick_product("the cheapest one please", priced)["price"] == 10
     assert pick_product("most expensive", priced)["price"] == 30 and pick_product("the last one", priced) is priced[2]
+    assert pick_products("i'll take the first and the third", shown) == [shown[0], shown[2]]
+    assert pick_products("both please", shown[:2]) == shown[:2] and pick_products("the second one", shown) == [shown[1]]
+    assert pick_products("hattefjall and nilsove", shown) == shown[:2]
     assert BUY.search("the cheapest one please") and BUY.search("actually show me the last one")
     assert not BUY.search("I bought a sofa last year")
     assert {n for h in named_products("How much is the MALM bed?") for n in product_names(h)} >= {"malm"}

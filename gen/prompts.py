@@ -18,7 +18,7 @@ Rules:
    Never pressure them and never invent discounts, offers, stock limits or deadlines."""
 
 # Said after every product list, so the customer always has an easy next step towards buying.
-NEXT_STEP = "Would you like one of these? Tell me the number and I'll share the full details."
+NEXT_STEP = "Would you like one of these? Tell me the number and I'll add it to your cart."
 CASUAL_NEXT_STEP = "Can I help you find something for your home today?"
 
 # Added to SYSTEM only when products are in the context: the small model copies a list template into everything.
