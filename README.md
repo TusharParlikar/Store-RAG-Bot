@@ -12,11 +12,17 @@ Customers rarely ask for a product by name. They say "my leg is broken" or "we'r
 > 1. **INGATORP - Chair with armrests** – ₹10,458. This chair provides support and comfort for long hours, which could help you stay seated while recovering.
 > 2. **REMSTA - Armchair** – ₹18,682. ...
 >
-> Would you like one of these? Tell me the number and I'll share the full details.
+> Would you like one of these? Tell me the number and I'll add it to your cart.
 >
 > **Customer:** 1
 >
-> **Bot:** *(a short description, then)* Price: ₹10,458 · Warranty: 60 months (5 years) · Product page link · buttons: What goes with it? / Warranty and returns / Similar options
+> **Bot:** *(a short description, then)* Price: ₹10,458 · Warranty: 60 months (5 years) · Product page link
+>
+> 🛒 Added to your cart (1 item, total ₹10,458). Tell me what else you need, or say **check out** when you are done.
+>
+> **Customer:** check out
+>
+> **Bot:** Here is your order (1 item, total ₹10,458): 1. INGATORP - Chair with armrests *(link)* – ₹10,458
 
 Replies are from real runs, shortened.
 
@@ -26,7 +32,7 @@ Replies are from real runs, shortened.
 - **Empathy, once**: sympathy for a problem or congratulations for good news, then up to 3 products and how each helps.
 - **Facts only from the data**: prices in ₹, warranty lengths and policies come from `data/`, never from the model's memory.
 - **Honest about stock**: says when a product is not sold, logs the request for the store, and suggests the closest match.
-- **Guides the purchase**: "2", "1st", "the cheapest one" or "I'll take the HATTEFJÄLL" shows the product's facts, its page link and next-step buttons.
+- **Cart and checkout**: the bot opens by asking what you need. "2", "1st", "the first and the third", "the cheapest one" or "I'll take the HATTEFJÄLL" adds products to a cart. Keep shopping, remove items, then say "check out" to get the list with a link to each product page and the total.
 - **Direct links**: name a product ("How much is the MALM bed?") and the reply ends with links to its product pages.
 - **Warranty check**: from a purchase date, Python works out whether the item is still covered.
 - **Local or hosted model**: Ollama on your machine, or any OpenAI-compatible API such as Groq. Same code.
@@ -89,7 +95,7 @@ All settings are environment variables, read by [config.py](config.py). See [.en
 | `LLM_API_KEY` | no | `ollama` | API key; set `<YOUR_GROQ_API_KEY>` for Groq |
 | `LLM_MODEL` | no | `qwen3:1.7b` | Model name (`qwen/qwen3-32b` on Groq) |
 | `LLM_TEMPERATURE` | no | `0.8` | Warmth of product replies (understanding uses 0, policy answers 0.3) |
-| `LLM_REASONING_EFFORT` | no | `none` | `none` turns Qwen3 thinking off |
+| `LLM_REASONING_EFFORT` | no | `none` | `none` turns Qwen3 thinking off; use `low` for models that reject `none` |
 | `LLM_KEEP_ALIVE` | no | `2h` for a local endpoint, otherwise unset | How long Ollama keeps the model loaded |
 | `EMBED_MODEL` | no | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
 
@@ -101,6 +107,7 @@ All settings are environment variables, read by [config.py](config.py). See [.en
 app/main.py              Streamlit chat page, next-step buttons, warranty date box
 gen/answer.py            understanding, routing, stock check, purchase flow
 gen/prompts.py           all prompt text
+gen/cart.py              cart: add, show, remove, check out (no LLM)
 gen/warranty.py          warranty date maths in plain Python
 rag/index.py             build the FAISS index and search it
 nlp/chunks.py            chunking, embeddings, rupee formatting
@@ -108,7 +115,8 @@ nlp/prepare_products.py  raw IKEA file to the product table
 data/raw/                downloaded dataset
 data/products/           product table used by the bot
 data/rules/              warranty, returns and expiry policies (demo policies)
-tests/scenarios.py       end-to-end chat scenarios
+tests/scenarios.py       single-message chat scenarios
+tests/shopping.py        whole shopping trips: ask, add, remove, check out
 docs/                    architecture and deployment notes
 config.py                settings from environment variables
 ```
@@ -118,10 +126,12 @@ config.py                settings from environment variables
 ```bash
 python -m gen.warranty          # warranty date edge cases
 python -m gen.answer            # Python self-checks, then a few live questions
+python -m gen.cart              # cart checks
 python -m tests.scenarios       # 77 chat scenarios against the real index and LLM
+python -m tests.shopping        # 5 shopping trips, 26 turns, with the cart carried between turns
 ```
 
-The scenarios cover prices, policies, needs and feelings, products not sold, off-topic questions, chit-chat, complaints, memory, picking a product and named-product links. Results vary a little between runs, because the small model does not always give the same answer.
+The scenarios cover prices, policies, needs and feelings, products not sold, off-topic questions, chit-chat, complaints, memory, picking a product and named-product links. The last full run on the local `qwen3:1.7b` model passed 75 of 77. On Groq (`openai/gpt-oss-120b`) the shopping trips pass 26 of 26; the 77 scenarios have not completed there, because the free daily token limit ran out.
 
 ## Data
 
@@ -134,14 +144,15 @@ To rebuild from the raw file: `python nlp/prepare_products.py`, then `python -m 
 With the local `qwen3:1.7b` model on a laptop CPU (i5-1335U, no GPU):
 - **Slow.** The first words of a reply appear after 20 to 35 seconds, and a full reply takes 25 to 55 seconds.
 - **Small-model slips.** It sometimes skips the requested opening, drifts towards health wording ("pain relief") despite the comfort-only rule, or answers a complaint with the return policy instead of the warranty route.
-- **One product per pick.** "I'll take the first and the third" picks one.
+- **No payment.** Checkout hands over product page links; the bot does not take orders or money, and the cart lives only in the browser session.
+- **Free hosted limits.** A message costs about 3,400 tokens, mostly the long understanding prompt. Groq's free tier for `openai/gpt-oss-120b` allows 200,000 tokens a day, which is about 60 messages.
 
-A larger hosted model (`qwen/qwen3-32b` on Groq) should be faster and more accurate. That is untested.
+A hosted model is much faster: on Groq, `openai/gpt-oss-120b` answers in 1 to 3 seconds. It needs `LLM_REASONING_EFFORT=low`, because it rejects `none`.
 
 ## Roadmap
 
 Not built yet:
-- A cart, and suggestions for what goes with the items in it.
+- Suggestions for what goes with the items in the cart.
 - A planner for bigger setups such as "an office for 30 people".
 - Saving the final order with an order number.
 - Deployment: the plan is in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
