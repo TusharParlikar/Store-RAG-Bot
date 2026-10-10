@@ -139,22 +139,30 @@ Reply warmly in 1 or 2 short sentences, then offer to help with furniture, price
 Never state product names, prices or store policies here, and never answer general knowledge questions.
 If they ask you to write or explain anything (a poem, a story, code, facts), kindly say you can only help with the furniture store."""
 
-UNAVAILABLE_TASK = ("Task: the store does NOT sell {item}; the customer has already been told. "
-                    "Start your reply with \"Here is something close you might like:\" and suggest 1 or 2 products from the context "
-                    "that could do a similar job, as a numbered list (bold name – ₹ price – benefit). Do not claim they do what {item} does. "
-                    "If nothing in the context is a sensible substitute, only say which kinds of furniture the store does have.")
+UNAVAILABLE_TASK = (
+    "Task: the store does NOT sell {item}; the customer has already been told. "
+    'Start your reply with "Here is something close you might like:" and suggest 1 or 2 products from the context '
+    "that could do a similar job, as a numbered list (bold name – ₹ price – benefit). Do not claim they do what {item} does. "
+    "If nothing in the context is a sensible substitute, only say which kinds of furniture the store does have."
+)
 
-NEED_TASK = ("Task: the customer told you about their situation. {opening} "
-             "Then suggest up to 3 products from the context that could make them more comfortable, and for each explain "
-             "in one sentence how it helps in their situation. Comfort level only: no medical advice or promises. "
-             "The products in the context are the store's closest matches for them, so always suggest from them: "
-             "never reply that you don't know here.")
+NEED_TASK = (
+    "Task: the customer told you about their situation. {opening} "
+    "Then suggest up to 3 products from the context that could make them more comfortable, and for each explain "
+    "in one sentence how it helps in their situation. Comfort level only: no medical advice or promises. "
+    "The products in the context are the store's closest matches for them, so always suggest from them: "
+    "never reply that you don't know here."
+)
 
-PURCHASE_TASK = ("Task: the customer wants to buy {name}. In 2 or 3 warm sentences say it is a good choice, "
-                 "what it is, and how it suits their situation. Use only features written in the context "
-                 "(never add a headrest, adjustable parts or materials it does not list). Do not mention any other product.\n")
+PURCHASE_TASK = (
+    "Task: the customer wants to buy {name}. In 2 or 3 warm sentences say it is a good choice, "
+    "what it is, and how it suits their situation. Use only features written in the context "
+    "(never add a headrest, adjustable parts or materials it does not list). Do not mention any other product.\n"
+)
 
 SYMPATHY = "Start with one short, warm sentence of sympathy in your own words about exactly what they said."
 CONGRATS = "Start by congratulating them warmly in your own words on exactly what they said."
-ACKNOWLEDGE = "Start with one short sentence showing you understood their situation, in your own words."
+ACKNOWLEDGE = (
+    "Start with one short sentence showing you understood their situation, in your own words."
+)
 FOLLOW_UP = "You already showed sympathy earlier, so do not say sorry again: start straight with the products."

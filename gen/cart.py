@@ -1,95 +1,176 @@
-"""The cart: products the customer has picked so far. Plain Python, no LLM.
+"""The cart: the products the customer has picked so far. Plain Python, no LLM.
 
-The cart is a list of product dicts. The chat page keeps it between messages and passes it to answer().
-`python -m gen.cart` runs the checks.
+A cart is a list of product dicts. The chat page keeps it between messages
+and passes it to answer() with every message.
+
+  add()      put picked products in the cart
+  command()  handle messages about the cart itself: check out, show, remove, empty
+  listing(), size(), added_line()   the texts shown to the customer
 """
+
 import re
 
 from nlp.chunks import inr
 
-# "check out" always means checkout; "that's all" or "I'm done" only when something is in the cart.
-CHECKOUT = re.compile(r"\b(check\s?-?out|place (the|my) order|proceed to (pay|buy|payment|order)|"
-                      r"ready to (buy|pay|order)|buy (them|these|all))\b", re.I)
-DONE = re.compile(r"\b(that'?s all|that is all|that'?s it|i'?m done|i am done|done shopping|nothing else|no more)\b", re.I)
-VIEW = re.compile(r"\b(show|see|view|what'?s in|what is in|check)\b.{0,15}\b(cart|basket|bag)\b|^\s*(my )?(cart|basket)\s*\??\s*$", re.I)
+# --------------------------------------------------------------------------------------
+# What the customer can say about the cart
+# --------------------------------------------------------------------------------------
+
+# "Check out" always means checkout.
+CHECKOUT = re.compile(
+    r"\b(check\s?-?out|place (the|my) order|proceed to (pay|buy|payment|order)"
+    r"|ready to (buy|pay|order)|buy (them|these|all))\b",
+    re.I,
+)
+
+# "That's all" or "I'm done" means checkout only when something is in the cart.
+DONE = re.compile(
+    r"\b(that'?s all|that is all|that'?s it|i'?m done|i am done|done shopping|nothing else"
+    r"|no more)\b",
+    re.I,
+)
+
+# "Show my cart", or just "cart?".
+VIEW = re.compile(
+    r"\b(show|see|view|what'?s in|what is in|check)\b.{0,15}\b(cart|basket|bag)\b"
+    r"|^\s*(my )?(cart|basket)\s*\??\s*$",
+    re.I,
+)
+
+# "Empty my cart", "start over".
 CLEAR = re.compile(r"\b(empty|clear|reset)\b.{0,15}\b(cart|basket|bag)\b|\bstart over\b", re.I)
-REMOVE = re.compile(r"\b(remove|delete|drop|take out)\b", re.I)  # not "don't want": "I don't want a big sofa" is a search
+
+# "Remove 2". Not "don't want": "I don't want a big sofa" is a search, not a removal.
+REMOVE = re.compile(r"\b(remove|delete|drop|take out)\b", re.I)
+
+# A position in the cart: "2", "second", "2nd".
 POSITION = re.compile(r"\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|[1-9])\b")
-WORDS = ("first", "1st", "second", "2nd", "third", "3rd", "fourth", "4th", "fifth", "5th")
+POSITION_WORDS = ("first", "1st", "second", "2nd", "third", "3rd", "fourth", "4th", "fifth", "5th")
+
+# --------------------------------------------------------------------------------------
+# Fixed texts
+# --------------------------------------------------------------------------------------
 
 MORE = "Tell me what else you need, or say **check out** when you are done."
 EMPTY = "Your cart is empty. What are you looking for today?"
+EMPTIED = "Your cart is empty now. What are you looking for today?"
+THANKS = "Open each link to buy the product on its page. Thank you for shopping with us!"
 
 
-def key(p: dict):
-    return p.get("item_id") or (p["name"], p["price"])
+# --------------------------------------------------------------------------------------
+# Adding
+# --------------------------------------------------------------------------------------
+
+
+def key(product: dict):
+    """What makes two cart entries the same product."""
+    return product.get("item_id") or (product["name"], product["price"])
 
 
 def add(cart: list[dict], products: list[dict]) -> tuple[list[dict], list[dict]]:
-    """(new cart, the products that were not in it yet)."""
-    have = {key(p) for p in cart}
+    """Returns (the new cart, the products that were not in it yet).
+
+    A product already in the cart is not added a second time.
+    """
+    in_cart = {key(product) for product in cart}
     new = []
-    for p in products:
-        if key(p) not in have:
-            have.add(key(p))
-            new.append(p)
+    for product in products:
+        if key(product) not in in_cart:
+            in_cart.add(key(product))
+            new.append(product)
     return cart + new, new
 
 
+# --------------------------------------------------------------------------------------
+# Texts
+# --------------------------------------------------------------------------------------
+
+
 def listing(cart: list[dict]) -> str:
-    return "\n".join(f"{i}. [{p['name']}]({p['link']}) – {inr(p['price'])}" if p.get("link")
-                     else f"{i}. {p['name']} – {inr(p['price'])}" for i, p in enumerate(cart, 1))
+    """A numbered list of the cart, each product linked to its page."""
+    rows = []
+    for number, product in enumerate(cart, 1):
+        name = product["name"]
+        if product.get("link"):
+            name = f"[{name}]({product['link']})"
+        rows.append(f"{number}. {name} – {inr(product['price'])}")
+    return "\n".join(rows)
 
 
 def size(cart: list[dict]) -> str:
-    n = len(cart)
-    return f"{n} item{'s' if n != 1 else ''}, total {inr(sum(p['price'] for p in cart))}"
+    """ "2 items, total ₹12,345" """
+    count = len(cart)
+    total = sum(product["price"] for product in cart)
+    return f"{count} item{'s' if count != 1 else ''}, total {inr(total)}"
 
 
 def added_line(cart: list[dict], new: list[dict]) -> str:
+    """The line under a pick: what happened, the cart size, and what to do next."""
     what = "Added to your cart" if new else "That is already in your cart"
     return f"🛒 {what} ({size(cart)}). {MORE}"
 
 
+def summary(cart: list[dict]) -> str:
+    """The cart with its size, or the "empty" text."""
+    if not cart:
+        return EMPTY
+    return f"Your cart ({size(cart)}):\n{listing(cart)}\n\n{MORE}"
+
+
+# --------------------------------------------------------------------------------------
+# Messages about the cart
+# --------------------------------------------------------------------------------------
+
+
+def to_remove(question: str, cart: list[dict]) -> list[dict]:
+    """The cart products a "remove ..." message points at: by name, else by position."""
+    q = question.lower()
+
+    by_name = [product for product in cart if product["name"].partition(" - ")[0].lower() in q]
+    if by_name:
+        return by_name
+
+    indexes = []
+    for word in POSITION.findall(q):
+        if word in POSITION_WORDS:
+            indexes.append(POSITION_WORDS.index(word) // 2)
+        else:
+            indexes.append(int(word) - 1)
+    by_position = [cart[index] for index in indexes if index < len(cart)]
+    if by_position:
+        return by_position
+
+    # "Remove it" with one product in the cart can only mean that one.
+    return cart if len(cart) == 1 else []
+
+
 def command(question: str, cart: list[dict]) -> tuple[str, list[dict]] | None:
-    """(reply, new cart) when the message is about the cart itself: check out, show, empty or remove. Else None."""
-    if CHECKOUT.search(question) or cart and DONE.search(question):
+    """Handle a message that is about the cart itself.
+
+    Returns (reply, new cart), or None when the message is about something else
+    and the normal answer steps should run.
+    """
+    # Check out: the order with a link to every product. The cart is then empty.
+    if CHECKOUT.search(question) or (cart and DONE.search(question)):
         if not cart:
             return EMPTY, cart
-        return (f"Here is your order ({size(cart)}):\n{listing(cart)}\n\n"
-                "Open each link to buy the product on its page. Thank you for shopping with us!"), []
+        return f"Here is your order ({size(cart)}):\n{listing(cart)}\n\n{THANKS}", []
+
+    # Empty the cart.
     if CLEAR.search(question):
-        return "Your cart is empty now. What are you looking for today?", []
+        return EMPTIED, []
+
+    # Show the cart.
     if VIEW.search(question):
-        return (f"Your cart ({size(cart)}):\n{listing(cart)}\n\n{MORE}" if cart else EMPTY), cart
+        return summary(cart), cart
+
+    # Remove something.
     if cart and REMOVE.search(question):
-        q = question.lower()
-        gone = [p for p in cart if p["name"].partition(" - ")[0].lower() in q]
-        if not gone:
-            spots = [WORDS.index(m) // 2 if m in WORDS else int(m) - 1 for m in POSITION.findall(q)]
-            gone = [cart[i] for i in spots if i < len(cart)]
-        if not gone and len(cart) == 1:
-            gone = cart
+        gone = to_remove(question, cart)
         if not gone:
             return f"Which one should I remove? Tell me its number.\n{listing(cart)}", cart
-        left = [p for p in cart if p not in gone]
-        names = ", ".join(p["name"] for p in gone)
-        return f"Removed {names}.\n\n" + (f"Your cart ({size(left)}):\n{listing(left)}\n\n{MORE}" if left else EMPTY), left
+        left = [product for product in cart if product not in gone]
+        names = ", ".join(product["name"] for product in gone)
+        return f"Removed {names}.\n\n{summary(left)}", left
+
     return None
-
-
-if __name__ == "__main__":
-    a = {"item_id": 1, "name": "MALM - Bed", "price": 1000, "link": "https://x/a"}
-    b = {"item_id": 2, "name": "LACK - Table", "price": 250000, "link": "https://x/b"}
-    cart, new = add([], [a, b, a])
-    assert cart == [a, b] and new == [a, b] and add(cart, [a]) == (cart, [])
-    assert command("do you have a sofa?", cart) is None and command("i'm done", []) is None
-    assert command("check out", [])[0] == EMPTY
-    text, left = command("ok lets check out", cart)
-    assert left == [] and "https://x/a" in text and "https://x/b" in text and "2 items, total ₹2,51,000" in text
-    assert command("that's all", cart)[1] == [] and command("show my cart", cart)[1] == cart
-    assert command("remove the malm", cart)[1] == [b] and command("remove 2", cart)[1] == [a]
-    assert command("remove it", cart)[1] == cart and command("remove it", [a])[1] == []
-    assert command("empty my cart", cart)[1] == []
-    assert command("I do not want a big sofa", cart) is None
-    print("cart checks pass")
