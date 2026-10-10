@@ -49,11 +49,11 @@ SCENARIOS = [
     ("I need something for my room", "answer", ["₹", "!- Leg", "!sorry"], {"history": ["my leg is broken"]}),
     # buying: details + next step; ask which one when several were listed
     ("HATTEFJÄLL office chair, I would like to buy this, tell me more", "answer",
-     ["HATTEFJÄLL", "Warranty: 60 months", "proceed", "!sorry"]),
+     ["HATTEFJÄLL", "Warranty: 60 months", "your cart", "!sorry"]),
     ("ok ill get that", "answer", ["which one", "1. **", "3. **", "!4. **"],
      {"history": ["my neck hurts"], "shown": "office chair with armrests"}),
-    ("the second one", "answer", ["Price: ₹", "proceed"], {"shown": "office chair with armrests"}),
-    ("2", "answer", ["Price: ₹", "proceed"], {"shown": "office chair with armrests"}),
+    ("the second one", "answer", ["Price: ₹", "your cart"], {"shown": "office chair with armrests"}),
+    ("2", "answer", ["Price: ₹", "your cart"], {"shown": "office chair with armrests"}),
     # more feelings and life events: empathy first, real furniture, a next step towards buying, no medical promises
     ("my father had knee surgery and comes home next week", "answer", ["sorry", "₹", "would you like", "!- Leg", "!cure"]),
     ("I work from home and my back hurts by evening", "answer", ["sorry", "₹", "would you like", "!cure"]),
@@ -85,9 +85,9 @@ SCENARIOS = [
     ("what's the weather like today?", "idk", [IDK]),
     ("good morning", "answer", ["!₹"]),
     ("the drawer of my wardrobe broke after two months", "answer", ["warranty", "!₹"]),
-    ("tell me more about the POÄNG armchair, I want to buy it", "answer", ["POÄNG", "Price: ₹", "proceed"]),
-    ("I'll take the first one", "answer", ["Price: ₹", "proceed"], {"shown": "comfortable armchair"}),
-    ("number 3 please", "answer", ["Price: ₹", "proceed"], {"shown": "dining table"}),
+    ("tell me more about the POÄNG armchair, I want to buy it", "answer", ["POÄNG", "Price: ₹", "your cart"]),
+    ("I'll take the first one", "answer", ["Price: ₹", "your cart"], {"shown": "comfortable armchair"}),
+    ("number 3 please", "answer", ["Price: ₹", "your cart"], {"shown": "dining table"}),
     ("I'm so happy, my daughter got into college!", "answer", ["congrat", "₹", "!sorry"]),
     # fresh set 2: written after fixing fresh set 1, never tuned on
     ("I just adopted a cat and she scratches everything", "answer", ["₹", "would you like"]),
@@ -101,7 +101,7 @@ SCENARIOS = [
     ("the leg of my new table snapped", "answer", ["!₹"]),
     ("who are you?", "answer", ["!₹"]),
     ("write me a poem about the sea", "answer", ["only help", "!₹"]),
-    ("ok I'll take it", "answer", ["Price: ₹", "proceed"], {"shown": "POÄNG rocking-chair", "n": 1}),
+    ("ok I'll take it", "answer", ["Price: ₹", "your cart"], {"shown": "POÄNG rocking-chair", "n": 1}),
     # from a real chat: "1 st" typed with a space, and no second "sorry" on a follow-up
     ("i want to take 1 st chair and this 1st chair", "answer", ["Price: ₹", "Product page"],
      {"history": ["i have broken arm, suggest me something", "Show me cafe furniture"], "shown": "cafe chair"}),
