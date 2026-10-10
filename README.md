@@ -1,23 +1,54 @@
 # Store RAG Bot
 
-A chat assistant for a furniture store that answers only from the store's own data and helps customers find, and buy, furniture that suits their situation.
+A chat assistant for a furniture store. It answers only from the store's own data and helps customers find, and buy, furniture that suits their situation.
 
-Customers rarely ask for a product by name. They say "my leg is broken" or "we're expecting a baby". A plain search on those words finds table legs and baby-shaped nothing. This bot first works out what the customer means, then searches for the furniture that helps, and answers with real prices and policies from the catalogue. If the data does not contain the answer, it says "I don't know" instead of guessing.
+Customers rarely ask for a product by name. They say "my leg is broken" or "we're expecting a baby", and a plain search on those words finds table legs. This bot first works out what the customer means, then searches for furniture that helps, and answers with real prices and policies from the catalogue. If the data does not hold the answer, it says "I don't know".
+
+## Example
+
+> **Customer:** my leg is broken
+>
+> **Bot:** Hello! I'm sorry to hear you're feeling pain, especially with your leg. Here are some products that could help:
+> 1. **INGATORP - Chair with armrests** – ₹10,458. This chair provides support and comfort for long hours, which could help you stay seated while recovering.
+> 2. **REMSTA - Armchair** – ₹18,682. ...
+>
+> Would you like one of these? Tell me the number and I'll share the full details.
+>
+> **Customer:** 1
+>
+> **Bot:** *(a short description, then)* Price: ₹10,458 · Warranty: 60 months (5 years) · Product page link · buttons: What goes with it? / Warranty and returns / Similar options
+
+Replies are from real runs, shortened.
 
 ## Features
 
-- **Understands the situation**: reads intent, feeling and needs from each message, and remembers the last 3 messages.
-- **Empathy first**: sympathy for a problem, congratulations for good news, then up to 3 products and how each one helps.
+- **Understands the situation**: reads intent, feeling and needs from each message and remembers the last 3 messages.
+- **Empathy, once**: sympathy for a problem or congratulations for good news, then up to 3 products and how each helps.
 - **Facts only from the data**: prices in ₹, warranty lengths and policies come from `data/`, never from the model's memory.
-- **Honest about stock**: "Sorry, laptop is not available in our store right now", logs the request for the store, and suggests the closest match.
-- **Guides the purchase**: "the second one", "1st", "number 2" or "I'll take the HATTEFJÄLL" shows the exact product facts, a product page link and next-step buttons.
-- **Direct links for named products**: mention a product by name ("How much is the MALM bed?") and the reply ends with links to its product pages. Names that are also everyday words ("LACK", "HALLO") count only when typed in capitals.
+- **Honest about stock**: says when a product is not sold, logs the request for the store, and suggests the closest match.
+- **Guides the purchase**: "2", "1st", "the cheapest one" or "I'll take the HATTEFJÄLL" shows the product's facts, its page link and next-step buttons.
+- **Direct links**: name a product ("How much is the MALM bed?") and the reply ends with links to its product pages.
 - **Warranty check**: from a purchase date, Python works out whether the item is still covered.
-- **Runs locally or free in the cloud**: Ollama on your machine, or Groq's free tier when deployed. Same code.
+- **Local or hosted model**: Ollama on your machine, or any OpenAI-compatible API such as Groq. Same code.
+
+## Quick start
+
+Prerequisites: Python 3.11 or 3.12 and [Ollama](https://ollama.com).
+
+```bash
+git clone https://github.com/TusharParlikar/Store-RAG-Bot.git
+cd Store-RAG-Bot
+python -m venv .venv
+.venv\Scripts\activate          # Windows; use source .venv/bin/activate on macOS/Linux
+pip install -r requirements.txt
+ollama pull qwen3:1.7b
+cp .env.example .env            # defaults point at local Ollama
+streamlit run app/main.py
+```
+
+Open http://localhost:8501. The first start downloads the embedding model, builds the search index and loads the LLM, which takes a few minutes on a laptop.
 
 ## How it works
-
-### One message, start to finish
 
 ```mermaid
 sequenceDiagram
@@ -34,90 +65,19 @@ sequenceDiagram
     A->>F: search "armchair with armrests footstool"
     F-->>A: closest products and policies, with scores
     A->>L: Call 2: store rules + products + needs + task
-    L-->>A: reply text
-    Note over A: Python adds the next step, the "not available" line, the request log
+    L-->>A: reply text, streamed
+    Note over A: Python adds links, the next step, the "not available" line
     A-->>UI: text, sources, missing item, picked product
     UI-->>C: reply, buttons, sources
 ```
 
-The model never decides on its own. It describes the message (call 1) and puts retrieved facts into words (call 2). Python does the routing, the stock check, the maths and the clean-up in between.
+1. **Understand.** One LLM call describes the message as JSON: intent, feeling, the furniture that would help.
+2. **Route.** Python picks the path: recommend, search, purchase, policy, chit-chat or "I don't know".
+3. **Retrieve.** The question, or the helpful furniture, is searched in a FAISS index of products and policy sections.
+4. **Answer.** A second LLM call writes the reply from the retrieved facts only.
+5. **Clean up.** Python adds the stock notice, product links and a next step.
 
-### The same example, step by step
-
-**1. Understand (LLM call 1).** [gen/answer.py](gen/answer.py) `understand()` sends the message, with the last 3 earlier messages, to the model at temperature 0 in JSON mode, with few-shot examples. For "my leg is broken" it returns:
-
-```json
-{"intent": "PRODUCT_RECOMMENDATION", "item": "", "problem": "broken leg", "emotion": "pain",
- "sentiment": "negative", "furniture": ["recliner", "armchair with armrests", "footstool"],
- "constraints": [], "meaning": "Needs comfortable seating that supports the leg while recovering."}
-```
-
-**2. Route (Python).** `answer()` checks the labels first. "The leg of my table snapped" is about furniture, so it becomes a complaint, not an injury. Then it picks a path:
-
-| Intent | Path |
-|---|---|
-| `PRODUCT_RECOMMENDATION` | Search the helpful `furniture`, not the problem words ("leg" would find table legs). Spare parts are dropped. |
-| `PRODUCT_SEARCH`, `PRODUCT_COMPARISON` | Search the question. Check whether the `item` is sold. |
-| `PURCHASE` | Find the product the customer means. Show its exact facts and next-step buttons. |
-| `STORE_INFORMATION`, `ORDER_SUPPORT`, `COMPLAINT` | Use policy sections only. |
-| `CASUAL_CONVERSATION` | A short friendly reply, with no search and no store facts. |
-| `GENERAL_QUESTION` | "I don't know", with no second LLM call. |
-
-**3. Retrieve.** [rag/index.py](rag/index.py) `search()` embeds the text with `all-MiniLM-L6-v2` and returns the top 5 chunks plus the top 2 policy sections, each with a cosine score. Policies are searched separately so about 3,000 products cannot crowd them out. If the best score is below 0.30, the reply is "I don't know" and the model is not called again.
-
-**4. Check stock.** `is_missing()` compares the main noun of the request with the main noun of every product type. A "Laptop table" is a table, so the store does not sell laptops.
-
-**5. Answer (LLM call 2).** The prompt holds the store rules (answer only from the context, quote prices exactly, no medical promises, never invent discounts or deadlines), the retrieved chunks, what the customer needs, and a task such as "start with one warm sentence of sympathy". Temperature is 0.8 for products and 0.3 for policy answers.
-
-**6. Clean up and show.** Python adds the "not available" line and logs the request to `data/requests/requests.csv`, removes any copied template text, and ends every product list with "Would you like one of these? Tell me the number". [app/main.py](app/main.py) shows the reply, a "Request noted" note, next-step buttons after a purchase choice, and a Sources panel with scores, links and prices.
-
-The reply the customer sees (from a real run, shortened):
-
-> Hello! I'm sorry to hear you're feeling pain, especially with your leg. Here are some products that could help:
-> 1. **INGATORP - Chair with armrests** – ₹10,458. This chair provides support and comfort for long hours, which could help you stay seated while recovering.
-> 2. **REMSTA - Armchair** – ₹18,682. ...
->
-> Would you like one of these? Tell me the number and I'll share the full details.
-
-### LLM calls per message
-
-| Message | Calls |
-|---|---|
-| Off-topic, or nothing in the data matches | 1 |
-| Product question, described need, policy question, chit-chat, picking a product | 2 |
-| Warranty check with a purchase date (date maths in [gen/warranty.py](gen/warranty.py)) | 1 |
-
-### Build phase (once, when the data changes)
-
-```mermaid
-flowchart LR
-    RAW[data/raw/ikea.csv] --> PREP[nlp/prepare_products.py<br/>SAR to INR, category info]
-    PREP --> PROD[data/products/products.csv]
-    PROD --> CH[nlp/chunks.py<br/>1 chunk per product]
-    RULES[data/rules/*.md] --> CH2[nlp/chunks.py<br/>1 chunk per policy section]
-    CH --> EMB[all-MiniLM-L6-v2 embeddings]
-    CH2 --> EMB
-    EMB --> IDX[(index/ FAISS)]
-```
-
-## Quick start
-
-Prerequisites: Python 3.11 or 3.12 (`faiss-cpu` wheels may lag on newer versions) and [Ollama](https://ollama.com).
-
-```bash
-git clone https://github.com/TusharParlikar/Store-RAG-Bot.git
-cd Store-RAG-Bot
-python -m venv .venv
-.venv\Scripts\activate          # Windows; use source .venv/bin/activate on macOS/Linux
-pip install -r requirements.txt
-ollama pull qwen3:1.7b
-cp .env.example .env            # defaults point at local Ollama
-streamlit run app/main.py
-```
-
-Open http://localhost:8501. The first start builds the FAISS index and downloads the embedding model, which takes a minute or two.
-
-To rebuild from the raw data: `python nlp/prepare_products.py`, then `python -m rag.index`.
+The model never decides on its own: it describes the message and puts facts into words, and Python does the rest. Full detail, including the intent table and the build phase, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Configuration
 
@@ -129,26 +89,28 @@ All settings are environment variables, read by [config.py](config.py). See [.en
 | `LLM_API_KEY` | no | `ollama` | API key; set `<YOUR_GROQ_API_KEY>` for Groq |
 | `LLM_MODEL` | no | `qwen3:1.7b` | Model name (`qwen/qwen3-32b` on Groq) |
 | `LLM_TEMPERATURE` | no | `0.8` | Warmth of product replies (understanding uses 0, policy answers 0.3) |
-| `LLM_REASONING_EFFORT` | no | `none` | `none` turns Qwen3 thinking off (about 30x faster) |
-| `LLM_KEEP_ALIVE` | no | `2h` for a local endpoint, otherwise unset | How long Ollama keeps the model loaded; reloading costs over a minute on a laptop CPU |
+| `LLM_REASONING_EFFORT` | no | `none` | `none` turns Qwen3 thinking off |
+| `LLM_KEEP_ALIVE` | no | `2h` for a local endpoint, otherwise unset | How long Ollama keeps the model loaded |
 | `EMBED_MODEL` | no | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
 
-`.env` is git-ignored. Never commit keys. Deployment steps: [DEPLOYMENT.md](DEPLOYMENT.md).
+`.env` is git-ignored. Never commit keys.
 
 ## Project structure
 
 ```
 app/main.py              Streamlit chat page, next-step buttons, warranty date box
-gen/answer.py            understanding, routing, prompts, stock check, purchase flow
+gen/answer.py            understanding, routing, stock check, purchase flow
+gen/prompts.py           all prompt text
 gen/warranty.py          warranty date maths in plain Python
 rag/index.py             build the FAISS index and search it
 nlp/chunks.py            chunking, embeddings, rupee formatting
 nlp/prepare_products.py  raw IKEA file to the product table
 data/raw/                downloaded dataset
 data/products/           product table used by the bot
-data/rules/              warranty, returns and expiry policies
+data/rules/              warranty, returns and expiry policies (demo policies)
 tests/scenarios.py       end-to-end chat scenarios
-project.md               full design and build plan
+docs/                    architecture and deployment notes
+config.py                settings from environment variables
 ```
 
 ## Tests
@@ -156,37 +118,34 @@ project.md               full design and build plan
 ```bash
 python -m gen.warranty          # warranty date edge cases
 python -m gen.answer            # Python self-checks, then a few live questions
-python -m tests.scenarios       # 72 chat scenarios against the real index and LLM
-python -m tests.scenarios 3     # 3 rounds each, to catch flaky model output
+python -m tests.scenarios       # 77 chat scenarios against the real index and LLM
 ```
 
-The scenarios cover prices, policies, needs and feelings, products not sold, off-topic questions, chit-chat, complaints, memory, buying, and two fresh sets written after the prompts were tuned. The last full run with `qwen3:1.7b` passed 65 of 72.
+The scenarios cover prices, policies, needs and feelings, products not sold, off-topic questions, chit-chat, complaints, memory, picking a product and named-product links. Results vary a little between runs, because the small model does not always give the same answer.
 
-## Dataset
+## Data
 
-Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from [TidyTuesday 2020-11-03](https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-11-03) (also on Kaggle as "IKEA SA Furniture Web Scraping"). It has 3,694 rows, 2,962 unique products and 17 categories. Prices are converted from SAR to INR at `SAR_TO_INR` (23.5); the original is kept in `price_sar`. The dataset has no warranty, benefit or pairing columns, so these are set per category in `CATEGORY_INFO` in [nlp/prepare_products.py](nlp/prepare_products.py). The policies in [data/rules/](data/rules/) are demo store policies.
+Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from [TidyTuesday 2020-11-03](https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-11-03), with 2,962 unique products in 17 categories. Prices are converted from SAR to INR at a fixed rate (`SAR_TO_INR` = 23.5). The dataset has no warranty, benefit or pairing columns, so these are set per category in `CATEGORY_INFO` in [nlp/prepare_products.py](nlp/prepare_products.py). The store name and the policies in [data/rules/](data/rules/) are made up for the demo, and product links go to IKEA's site.
 
-## Stack
-
-| Part | Choice |
-|---|---|
-| Chat UI | Streamlit |
-| LLM | `qwen3:1.7b` on Ollama (local), `qwen/qwen3-32b` on Groq free tier (deployed), through the OpenAI client |
-| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` on CPU |
-| Vector search | FAISS (inner product on unit vectors = cosine) |
+To rebuild from the raw file: `python nlp/prepare_products.py`, then `python -m rag.index`.
 
 ## Limitations
 
-Seen in testing with the local `qwen3:1.7b` model:
-- Speed on a laptop CPU (i5-1335U, no GPU): the model reads prompts at about 50 tokens/s and writes about 11 to 16 tokens/s. Replies stream word by word, but the first words still take 20 to 35 seconds and a full reply 25 to 55 seconds. Starting the app takes about 2 minutes, because it loads the model and caches the long understanding prompt up front, so customers don't pay for that. Groq answers in seconds.
-- It sometimes skips the requested opening, for example no "congratulations" after "my daughter got into college".
-- Product descriptions can drift towards health wording ("pain relief") despite the comfort-only rule.
-- A complaint about a broken item may get the return policy instead of the warranty repair route.
+With the local `qwen3:1.7b` model on a laptop CPU (i5-1335U, no GPU):
+- **Slow.** The first words of a reply appear after 20 to 35 seconds, and a full reply takes 25 to 55 seconds.
+- **Small-model slips.** It sometimes skips the requested opening, drifts towards health wording ("pain relief") despite the comfort-only rule, or answers a complaint with the return policy instead of the warranty route.
+- **One product per pick.** "I'll take the first and the third" picks one.
 
-The deployed `qwen/qwen3-32b` should do better on the last three. That is untested.
+A larger hosted model (`qwen/qwen3-32b` on Groq) should be faster and more accurate. That is untested.
 
-Not built yet (planned in [project.md](project.md)): a cart, a planner for bigger setups such as "an office for 30 people", and saving the final order with an order number.
+## Roadmap
+
+Not built yet:
+- A cart, and suggestions for what goes with the items in it.
+- A planner for bigger setups such as "an office for 30 people".
+- Saving the final order with an order number.
+- Deployment: the plan is in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## License
 
-No license file.
+No license file yet.
