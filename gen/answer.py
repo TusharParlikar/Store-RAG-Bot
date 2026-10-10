@@ -214,6 +214,15 @@ def pick_product(question: str, shown: list[dict]) -> dict | None:
     return shown[0] if len(shown) == 1 else None
 
 
+def listed(reply: str, sources: list[dict]) -> list[dict]:
+    """The products a reply actually lists, in the order the reply lists them.
+
+    "The second one" means the second in the text. The model reorders products, so search order would be wrong.
+    """
+    found = [s for s in sources if s.get("kind") == "product" and s["name"] in reply and inr(s["price"]) in reply]
+    return sorted(found, key=lambda s: (reply.find(s["name"]), reply.find(inr(s["price"]))))
+
+
 def pick_products(question: str, shown: list[dict]) -> list[dict]:
     """Every product the customer picks in one message: "the first and the third", "MALM and HEMNES", "both"."""
     q = plain(ordinals(question))
@@ -464,6 +473,9 @@ if __name__ == "__main__":
     priced = [{"name": "A - x", "price": 30}, {"name": "B - y", "price": 10}, {"name": "C - z", "price": 20}]
     assert pick_product("the cheapest one please", priced)["price"] == 10
     assert pick_product("most expensive", priced)["price"] == 30 and pick_product("the last one", priced) is priced[2]
+    hits = [{"kind": "product", "name": "A - x", "price": 10}, {"kind": "product", "name": "B - y", "price": 20},
+            {"kind": "product", "name": "C - z", "price": 30}]
+    assert [h["name"][0] for h in listed("1. **B - y** – ₹20 2. **A - x** – ₹10", hits)] == ["B", "A"]
     assert pick_products("i'll take the first and the third", shown) == [shown[0], shown[2]]
     assert pick_products("both please", shown[:2]) == shown[:2] and pick_products("the second one", shown) == [shown[1]]
     assert pick_products("hattefjall and nilsove", shown) == shown[:2]

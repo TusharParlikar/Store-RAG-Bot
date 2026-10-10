@@ -1,20 +1,22 @@
 """Whole shopping trips against the real index and LLM: ask, add, add more, check out. Run: python -m tests.shopping
 
 Each turn: what the customer types, then strings the reply must contain ("!x" = must not contain).
+An optional third item is a position: the product added must be the one the last reply listed at that number.
 The cart and the products shown last are carried between turns the same way the chat page does it.
 """
+import re
 import sys
 import time
 
-from gen.answer import answer
-from nlp.chunks import inr
+
+from gen.answer import answer, listed
 
 TRIPS = {
     "need, add one, add another kind, check out": [
         ("my back hurts after sitting all day", ["sorry", "₹", "add it to your cart"]),
-        ("1", ["Added to your cart (1 item", "check out"]),
+        ("1", ["Added to your cart (1 item", "check out"], 1),
         ("do you have a desk?", ["₹", "add it to your cart"]),
-        ("the second one", ["Added to your cart (2 items"]),
+        ("the second one", ["Added to your cart (2 items"], 2),
         ("ok lets check out", ["Here is your order (2 items", "https://", "!Added"]),
         ("show my cart", ["cart is empty"]),
     ],
@@ -25,16 +27,16 @@ TRIPS = {
     ],
     "add, change mind, remove, check out": [
         ("I need a bookcase", ["₹"]),
-        ("add the first one to my cart", ["Added to your cart (1 item"]),
+        ("add the first one to my cart", ["Added to your cart (1 item"], 1),
         ("show me wardrobes", ["₹"]),
-        ("2", ["Added to your cart (2 items"]),
+        ("2", ["Added to your cart (2 items"], 2),
         ("show my cart", ["Your cart (2 items", "1. ", "2. "]),
         ("remove 1", ["Removed", "Your cart (1 item"]),
         ("check out", ["Here is your order (1 item", "https://"]),
     ],
     "same product twice, and a named product": [
         ("do you have office chairs?", ["₹"]),
-        ("1", ["Added to your cart (1 item"]),
+        ("1", ["Added to your cart (1 item"], 1),
         ("add the first one to my cart", ["already in your cart (1 item"]),
         ("I want to buy the POÄNG rocking-chair", ["POÄNG", "Added to your cart (2 items"]),
         ("checkout", ["Here is your order (2 items", "POÄNG"]),
@@ -54,16 +56,17 @@ def main():
     for name, turns in TRIPS.items():
         print(f"\n##### {name}")
         cart, history, last = [], [], {"content": "", "sources": []}
-        for q, must in turns:
-            # the products the last reply actually listed, as app/main.py works it out
-            shown = [s for s in last["sources"] if s.get("kind") == "product"
-                     and s["name"] in last["content"] and inr(s["price"]) in last["content"]]
+        for q, must, *spot in turns:
+            shown = listed(last["content"], last["sources"])  # as app/main.py works it out
+            numbered = re.findall(r"^\d+\. \*\*(.+?)\*\*", last["content"], re.M)  # names as the customer reads them
             t = time.time()
             r = answer(q, history=history, shown=shown, cart=cart)
             cart, last = r["cart"], {"content": r["text"], "sources": r["sources"]}
             history.append(q)
             low = r["text"].lower()
             bad = [m for m in must if (m[1:].lower() in low if m.startswith("!") else m.lower() not in low)]
+            if spot and (len(numbered) < spot[0] or not cart or cart[-1]["name"] != numbered[spot[0] - 1]):
+                bad.append(f"picked {cart[-1]['name'] if cart else None!r}, number {spot[0]} was {numbered[spot[0] - 1:spot[0]]}")
             total += 1
             fails += bool(bad)
             print(f"{'PASS' if not bad else 'FAIL'} {time.time() - t:5.1f}s  cart={len(cart)}  {q!r}")
