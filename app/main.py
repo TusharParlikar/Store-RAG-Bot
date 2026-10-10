@@ -7,6 +7,7 @@ Streamlit runs this whole file again on every message and every button click.
 What must survive between runs (the messages and the cart) lives in st.session_state.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -16,11 +17,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import streamlit as st
 
 from app import ui
-from gen.answer import answer
+from gen.answer import MIN_SCORE, answer
+from gen.catalogue import named_products
 from gen.picking import listed
 from gen.understand import understand
-from gen.warranty import describe
+from gen.warranty import report
 from rag.index import search
+
+# A chat message that asks whether something is still under warranty. The bot cannot know
+# the purchase date, so the reply also points to the checker in the sidebar.
+ASKS_WARRANTY_STATUS = re.compile(
+    r"\b(still|is|are)\b.*\b(under warranty|in warranty|covered)\b"  # "is it still covered?"
+    r"|\bwarranty\b.*\b(expired?|status|valid|left|over)\b"  # "has my warranty expired?"
+    r"|\bcheck\b.*\bwarranty\b",  # "check warranty"
+    re.I,
+)
+WARRANTY_HINT = (
+    "To check a product you bought, use **Warranty check** in the sidebar: "
+    "type the product and pick the purchase date."
+)
 
 # --------------------------------------------------------------------------------------
 # Helpers
@@ -42,21 +57,27 @@ def warm_up():
         pass
 
 
-def warranty_fact(prompt: str, purchase) -> str:
-    """A computed warranty line for the product the question is about.
+def warranty_reply(product_text: str, purchase) -> str:
+    """The answer of the sidebar warranty checker. Plain Python: no LLM, so it always works.
 
-    Empty unless the customer gave a purchase date and is asking about warranty.
+    The product is found by name ("MARKUS") or, failing that, by search ("my sofa").
     """
-    if not purchase or "warrant" not in prompt.lower():
-        return ""
+    named = named_products(product_text)
+    found = [hit for hit in search(product_text) if hit["kind"] == "product"]
 
-    product = next((hit for hit in search(prompt) if hit["kind"] == "product"), None)
-    if not product:
-        return ""
-    return describe(product["name"], purchase, product["warranty_months"])
+    if named:
+        product = named[0]
+    elif found and found[0]["score"] >= MIN_SCORE:
+        product = found[0]
+    else:
+        return (
+            f"I could not find a product called **{product_text}**. "
+            'Please check the name, for example "MARKUS office chair".'
+        )
+    return report(product["name"], purchase, product["warranty_months"])
 
 
-def get_reply(prompt: str, purchase, live) -> dict:
+def get_reply(prompt: str, live) -> dict:
     """Ask the bot for a reply.
 
     `live` is the slot on the page where the reply appears word by word while it is written.
@@ -73,7 +94,6 @@ def get_reply(prompt: str, purchase, live) -> dict:
     try:
         result = answer(
             prompt,
-            warranty_fact(prompt, purchase),
             history=earlier,
             shown=shown,
             cart=st.session_state.cart,
@@ -91,6 +111,10 @@ def get_reply(prompt: str, purchase, live) -> dict:
     # The model returned nothing: never leave a blank bubble.
     if not result["text"].strip():
         result["text"] = "Sorry, I lost my words for a moment. Could you ask that again?"
+
+    # A question like "is my chair still under warranty?" also gets the way to check it.
+    if ASKS_WARRANTY_STATUS.search(prompt):
+        result["text"] += "\n\n" + WARRANTY_HINT
     return result
 
 
@@ -105,7 +129,16 @@ warm_up()
 if "messages" not in st.session_state:
     ui.new_chat()
 
-purchase = ui.sidebar()
+warranty_request = ui.sidebar()
+
+# The sidebar warranty checker was used: put the question and its answer in the chat.
+if warranty_request:
+    product_text, purchase = warranty_request
+    question = f"Warranty check: {product_text}, bought on {purchase:%d %b %Y}"
+    st.session_state.messages.append({"role": "user", "content": question})
+    st.session_state.messages.append(
+        {"role": "assistant", "content": warranty_reply(product_text, purchase)}
+    )
 
 # Everything said so far.
 for number, message in enumerate(st.session_state.messages):
@@ -133,7 +166,7 @@ if prompt:
         # Shown at once, so the bubble is never empty while the model reads the message.
         live.markdown("_Thinking..._")
 
-        result = get_reply(prompt, purchase, live)
+        result = get_reply(prompt, live)
         reply = {
             "role": "assistant",
             "content": result["text"],

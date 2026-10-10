@@ -1,7 +1,7 @@
 """How the chat page looks. The chat loop itself is in app/main.py.
 
 header()           page title and style
-sidebar()          the cart and the warranty date box
+sidebar()          the cart (with remove buttons) and the warranty checker
 message()          one chat bubble
 extras()           what goes under a reply: buttons, the "request noted" note, sources
 example_buttons()  starter questions for a new chat
@@ -21,11 +21,7 @@ from nlp.chunks import inr
 # The bot speaks first and asks what the customer wants.
 WELCOME = {
     "role": "assistant",
-    "content": (
-        "Hello, welcome to Nest & Oak! What are you looking for today? "
-        "Tell me what you need, or what is going on at home, and I'll find furniture that fits. "
-        "Pick as many as you like, then say **check out**."
-    ),
+    "content": "Hello, welcome to Nest & Oak! What are you looking for today?",
 }
 
 # Starter questions shown before the customer has typed anything.
@@ -83,40 +79,68 @@ def header():
     st.markdown(STYLE, unsafe_allow_html=True)
 
 
-def sidebar() -> date | None:
-    """Draw the sidebar. Returns the purchase date when the customer gave one, else None."""
+def sidebar() -> tuple[str, date] | None:
+    """Draw the sidebar.
+
+    Returns (product, purchase date) when the customer pressed "Check warranty", else None.
+    """
+    warranty_request = None
+
     with st.sidebar:
-        # The cart, with a Check out button once something is in it.
-        cart = st.session_state.cart
-        st.subheader(f"🛒 Cart ({len(cart)})")
-        if cart:
-            st.markdown(cart_.listing(cart))
-            st.caption(cart_.size(cart))
-            if st.button("Check out", type="primary", use_container_width=True):
-                send("check out")
-        else:
-            st.caption("Empty. Tell me the number of a product to add it.")
-
+        cart_box()
         st.divider()
-
-        # The purchase date for warranty questions.
-        st.subheader("Warranty check")
-        use_date = st.toggle("I know my purchase date")
-        purchase = st.date_input(
-            "Purchase date",
-            value=date.today(),
-            max_value=date.today(),
-            disabled=not use_date,
-        )
-        st.caption("Used when you ask about warranty.")
-
+        warranty_request = warranty_box()
         st.divider()
 
         if st.button("Clear chat", use_container_width=True):
             new_chat()
             st.rerun()
 
-    return purchase if use_date else None
+    return warranty_request
+
+
+def cart_box():
+    """The cart: every product with a button to remove it, the total, and Check out."""
+    cart = st.session_state.cart
+    st.subheader(f"🛒 Cart ({len(cart)})")
+
+    if not cart:
+        st.caption("Empty. Tell me the number of a product to add it.")
+        return
+
+    for number, product in enumerate(cart, 1):
+        name_column, remove_column = st.columns([4, 1])
+
+        name = product["name"]
+        if product.get("link"):
+            name = f"[{name}]({product['link']})"
+        name_column.markdown(f"{number}. {name} – {inr(product['price'])}")
+
+        # Removing here needs no message to the bot: change the cart and draw the page again.
+        # The label is a "close" icon; the key makes each product's button its own.
+        if remove_column.button(":material/close:", key=f"remove-{cart_.key(product)}"):
+            st.session_state.cart = [item for item in cart if item is not product]
+            st.rerun()
+
+    st.caption(cart_.size(cart))
+    if st.button("Check out", type="primary", use_container_width=True):
+        send("check out")
+
+
+def warranty_box() -> tuple[str, date] | None:
+    """The warranty checker: which product, when it was bought, and a button.
+
+    Returns (product, purchase date) when the button was pressed with a product filled in.
+    """
+    st.subheader("Warranty check")
+    product = st.text_input("Product", placeholder="e.g. MARKUS office chair")
+    purchase = st.date_input("Purchase date", value=date.today(), max_value=date.today())
+
+    pressed = st.button("Check warranty", use_container_width=True)
+    if pressed and not product.strip():
+        st.caption("Type the product name first.")
+        return None
+    return (product.strip(), purchase) if pressed else None
 
 
 def example_buttons() -> str | None:
