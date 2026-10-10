@@ -4,12 +4,13 @@ Each turn: what the customer types, then strings the reply must contain ("!x" = 
 An optional third item is a position: the product added must be the one the last reply listed at that number.
 The cart and the products shown last are carried between turns the same way the chat page does it.
 """
+
 import re
 import sys
 import time
 
-
-from gen.answer import answer, listed
+from gen.answer import answer
+from gen.picking import listed
 
 TRIPS = {
     "need, add one, add another kind, check out": [
@@ -58,20 +59,34 @@ def main():
         cart, history, last = [], [], {"content": "", "sources": []}
         for q, must, *spot in turns:
             shown = listed(last["content"], last["sources"])  # as app/main.py works it out
-            numbered = re.findall(r"^\d+\. \*\*(.+?)\*\*", last["content"], re.M)  # names as the customer reads them
+            numbered = re.findall(
+                r"^\d+\. \*\*(.+?)\*\*", last["content"], re.M
+            )  # names as the customer reads them
             t = time.time()
             r = answer(q, history=history, shown=shown, cart=cart)
             cart, last = r["cart"], {"content": r["text"], "sources": r["sources"]}
             history.append(q)
             low = r["text"].lower()
-            bad = [m for m in must if (m[1:].lower() in low if m.startswith("!") else m.lower() not in low)]
-            if spot and (len(numbered) < spot[0] or not cart or cart[-1]["name"] != numbered[spot[0] - 1]):
-                bad.append(f"picked {cart[-1]['name'] if cart else None!r}, number {spot[0]} was {numbered[spot[0] - 1:spot[0]]}")
+            bad = [
+                m
+                for m in must
+                if (m[1:].lower() in low if m.startswith("!") else m.lower() not in low)
+            ]
+            if spot and (
+                len(numbered) < spot[0] or not cart or cart[-1]["name"] != numbered[spot[0] - 1]
+            ):
+                bad.append(
+                    f"picked {cart[-1]['name'] if cart else None!r}, number {spot[0]} was {numbered[spot[0] - 1:spot[0]]}"
+                )
             total += 1
             fails += bool(bad)
-            print(f"{'PASS' if not bad else 'FAIL'} {time.time() - t:5.1f}s  cart={len(cart)}  {q!r}")
+            print(
+                f"{'PASS' if not bad else 'FAIL'} {time.time() - t:5.1f}s  cart={len(cart)}  {q!r}"
+            )
             if bad:
-                print(f"      missing/unwanted: {bad}\n      understood: {r['understanding']['intent']}\n      got: {r['text'][:400]!r}")
+                print(
+                    f"      missing/unwanted: {bad}\n      understood: {r['understanding']['intent']}\n      got: {r['text'][:400]!r}"
+                )
     print(f"\n{total - fails}/{total} turns passed")
     return fails
 
