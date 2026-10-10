@@ -4,6 +4,8 @@ A chat assistant for a furniture store. It answers only from the store's own dat
 
 Customers rarely ask for a product by name. They say "my leg is broken" or "we're expecting a baby", and a plain search on those words finds table legs. This bot first works out what the customer means, then searches for furniture that helps, and answers with real prices and policies from the catalogue. If the data does not hold the answer, it says "I don't know".
 
+**Docs:** [how it works](docs/ARCHITECTURE.md) · [how to deploy](docs/DEPLOY.md)
+
 ## Example
 
 > **Customer:** my leg is broken
@@ -39,7 +41,7 @@ Replies are from real runs, shortened.
 
 ## Quick start
 
-Prerequisites: Python 3.11 or 3.12 and [Ollama](https://ollama.com).
+Prerequisites: Python 3.11 or newer (developed on 3.14) and [Ollama](https://ollama.com).
 
 ```bash
 git clone https://github.com/TusharParlikar/Store-RAG-Bot.git
@@ -104,8 +106,13 @@ All settings are environment variables, read by [config.py](config.py). See [.en
 ## Project structure
 
 ```
-app/main.py              Streamlit chat page, next-step buttons, warranty date box
-gen/answer.py            understanding, routing, stock check, purchase flow
+app/main.py              the chat loop: take a message, get the answer, show it
+app/ui.py                page look, sidebar (cart, warranty date), buttons under a reply
+gen/answer.py            the steps of one answer, in order; the only entry point
+gen/understand.py        read the message (LLM call 1) and correct its labels
+gen/picking.py           which product "the second one" or "the cheapest" means
+gen/catalogue.py         stock check, product names, product page links
+gen/llm.py               the one function that calls the model
 gen/prompts.py           all prompt text
 gen/cart.py              cart: add, show, remove, check out (no LLM)
 gen/warranty.py          warranty date maths in plain Python
@@ -115,6 +122,7 @@ nlp/prepare_products.py  raw IKEA file to the product table
 data/raw/                downloaded dataset
 data/products/           product table used by the bot
 data/rules/              warranty, returns and expiry policies (demo policies)
+tests/checks.py          fast checks of the plain-Python parts, no LLM
 tests/scenarios.py       single-message chat scenarios
 tests/shopping.py        whole shopping trips: ask, add, remove, check out
 docs/                    architecture and deployment notes
@@ -125,13 +133,12 @@ config.py                settings from environment variables
 
 ```bash
 python -m gen.warranty          # warranty date edge cases
-python -m gen.answer            # Python self-checks, then a few live questions
-python -m gen.cart              # cart checks
+python -m tests.checks          # fast checks, no LLM: picking, cart, stock words, product names
 python -m tests.scenarios       # 77 chat scenarios against the real index and LLM
 python -m tests.shopping        # 5 shopping trips, 26 turns, with the cart carried between turns
 ```
 
-The scenarios cover prices, policies, needs and feelings, products not sold, off-topic questions, chit-chat, complaints, memory, picking a product and named-product links. The last full run on the local `qwen3:1.7b` model passed 75 of 77. On Groq (`openai/gpt-oss-120b`) the shopping trips pass 26 of 26; the 77 scenarios have not completed there, because the free daily token limit ran out.
+The scenarios cover prices, policies, needs and feelings, products not sold, off-topic questions, chit-chat, complaints, memory, picking a product and named-product links. On the local `qwen3:1.7b` model the shopping trips pass 26 of 26, and the last full run of the 77 scenarios passed 75 of 77 (that run was before the code was split into modules). On Groq (`openai/gpt-oss-120b`) the shopping trips pass 26 of 26; the 77 scenarios have not completed there, because the free daily token limit ran out.
 
 ## Data
 
@@ -155,7 +162,7 @@ Not built yet:
 - Suggestions for what goes with the items in the cart.
 - A planner for bigger setups such as "an office for 30 people".
 - Saving the final order with an order number.
-- Deployment: the plan is in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+- Deployment: the plan is in [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## License
 
