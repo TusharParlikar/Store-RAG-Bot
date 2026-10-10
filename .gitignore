@@ -15,7 +15,6 @@ venv/
 # Built or written at run time
 index/
 data/requests/*.csv
-data/orders/*.json
 *.log
 
 # Tools
