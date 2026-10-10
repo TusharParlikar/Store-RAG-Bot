@@ -7,7 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 
-from gen.answer import answer, understand
+from gen import cart as cart_
+from gen.answer import answer, listed, understand
 from gen.warranty import describe
 from nlp.chunks import inr
 from rag.index import search
@@ -44,7 +45,26 @@ def warm_up():
 
 warm_up()
 
+# The bot speaks first and asks what the customer wants.
+WELCOME = {"role": "assistant", "content": "Hello, welcome to Nest & Oak! What are you looking for today? "
+           "Tell me what you need, or what is going on at home, and I'll find furniture that fits. "
+           "Pick as many as you like, then say **check out**."}
+if "messages" not in st.session_state:
+    st.session_state.messages = [WELCOME]
+    st.session_state.cart = []
+
 with st.sidebar:
+    cart = st.session_state.cart
+    st.subheader(f"🛒 Cart ({len(cart)})")
+    if cart:
+        st.markdown(cart_.listing(cart))
+        st.caption(cart_.size(cart))
+        if st.button("Check out", type="primary", use_container_width=True):
+            st.session_state.queued = "check out"
+            st.rerun()
+    else:
+        st.caption("Empty. Tell me the number of a product to add it.")
+    st.divider()
     st.subheader("Warranty check")
     use_date = st.toggle("I know my purchase date")
     purchase = st.date_input("Purchase date", value=date.today(), max_value=date.today(),
@@ -52,11 +72,9 @@ with st.sidebar:
     st.caption("Used when you ask about warranty.")
     st.divider()
     if st.button("Clear chat", use_container_width=True):
-        st.session_state.messages = []
+        st.session_state.messages = [WELCOME]
+        st.session_state.cart = []
         st.rerun()
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
 
 def show_next_steps(product: dict, key: str):
@@ -98,7 +116,7 @@ for i, msg in enumerate(st.session_state.messages):
         show_extras(msg, str(i))
 
 prompt = st.chat_input("Ask me anything about our furniture...") or st.session_state.pop("queued", None)
-if not st.session_state.messages and not prompt:
+if len(st.session_state.messages) == 1 and not prompt:  # only the welcome so far
     st.caption("Try one of these:")
     cols = st.columns(3)
     for col, example in zip(cols, ["How much is the NORDVIKEN bar table?",
@@ -124,10 +142,9 @@ if prompt:
         try:
             earlier = [m["content"] for m in st.session_state.messages[:-1] if m["role"] == "user"]
             last_bot = next((m for m in reversed(st.session_state.messages) if m["role"] == "assistant"), {})
-            # Only the products the reply actually listed, not every search hit behind it.
-            shown = [s for s in last_bot.get("sources", []) if s["kind"] == "product"
-                     and s["name"] in last_bot["content"] and inr(s["price"]) in last_bot["content"]]
-            r = answer(prompt, extra, history=earlier, shown=shown, on_token=lambda t: live.markdown(t + " ▌"))
+            shown = listed(last_bot.get("content", ""), last_bot.get("sources", []))
+            r = answer(prompt, extra, history=earlier, shown=shown, cart=st.session_state.cart,
+                       on_token=lambda t: live.markdown(t + " ▌"))
         except Exception as e:  # LLM down or bad key: show it instead of a stack trace
             r = {"text": f"Sorry, I can't reach the language model right now ({type(e).__name__}).",
                  "sources": [], "missing": None}
@@ -138,3 +155,6 @@ if prompt:
         live.markdown(reply["content"])  # final text: adds the "not available" line and the next step
         show_extras(reply, str(len(st.session_state.messages)))
     st.session_state.messages.append(reply)
+    if r.get("cart", st.session_state.cart) != st.session_state.cart:
+        st.session_state.cart = r["cart"]
+        st.rerun()  # redraw the sidebar cart, which was drawn before this reply
