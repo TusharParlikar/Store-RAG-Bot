@@ -4,7 +4,9 @@ A chat assistant for a furniture store. It answers only from the store's own dat
 
 Customers rarely ask for a product by name. They say "my leg is broken" or "we're expecting a baby", and a plain search on those words finds table legs. This bot first works out what the customer means, then searches for furniture that helps, and answers with real prices and policies from the catalogue. If the data does not hold the answer, it says "I don't know".
 
-**Docs:** [how it works](docs/ARCHITECTURE.md) · [how to deploy](docs/DEPLOY.md)
+**Live demo:** https://store-rag-bot.streamlit.app/
+
+**Docs:** [how it works](docs/ARCHITECTURE.md)
 
 ## Example
 
@@ -125,7 +127,7 @@ data/rules/              warranty, returns and expiry policies (demo policies)
 tests/checks.py          fast checks of the plain-Python parts, no LLM
 tests/scenarios.py       single-message chat scenarios
 tests/shopping.py        whole shopping trips: ask, add, remove, check out
-docs/                    architecture and deployment notes
+docs/ARCHITECTURE.md     how it works, in detail
 config.py                settings from environment variables
 ```
 
@@ -156,13 +158,16 @@ With the local `qwen3:1.7b` model on a laptop CPU (i5-1335U, no GPU):
 
 A hosted model is much faster: on Groq, `openai/gpt-oss-120b` answers in 1 to 3 seconds. It needs `LLM_REASONING_EFFORT=low`, because it rejects `none`.
 
+## Deployment
+
+The live demo runs on Streamlit Community Cloud (main file `app/main.py`) with the model hosted on Groq. The app's Secrets hold the same settings as `.env`: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` and `LLM_REASONING_EFFORT`. Pushing to `main` redeploys it. The app sleeps when unused, so the first visit can take about a minute, and the free Groq limit covers about 60 messages a day.
+
 ## Roadmap
 
 Not built yet:
 - Suggestions for what goes with the items in the cart.
 - A planner for bigger setups such as "an office for 30 people".
 - Saving the final order with an order number.
-- Deployment: the plan is in [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## License
 
