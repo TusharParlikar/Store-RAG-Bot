@@ -29,3 +29,6 @@ desktop.ini
 
 # The demo video is kept local, not in the repo
 docs/demo.mp4
+
+# Personal interview notes, kept local
+INTERVIEW.md
