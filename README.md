@@ -89,6 +89,27 @@ sequenceDiagram
 
 The model never decides on its own: it describes the message and puts facts into words, and Python does the rest. Full detail, including the intent table and the build phase, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Preprocessing
+
+**The data, once.** [nlp/prepare_products.py](nlp/prepare_products.py) cleans the raw IKEA file:
+- drops products listed twice (3,694 rows become 2,962 products),
+- fixes a broken category name and tidies spaces in names,
+- joins name and short description into one searchable title ("MALM - Bed frame, high, 160x200 cm"),
+- converts prices from Saudi riyal to rupees,
+- adds warranty months, benefit, "good for" and "goes with" per category, because the dataset has none,
+- stops if a required column is empty.
+
+[nlp/chunks.py](nlp/chunks.py) then makes one chunk per product and one per policy section (split at `##` headings), and embeds each chunk as a 384-number vector of length 1. Products and policy sections are already complete units, so nothing is cut at a fixed character count.
+
+**Each message.** Before searching:
+- the first LLM call rewrites a problem into furniture to look for ("my leg is broken" becomes "armchair with armrests, footstool"),
+- body and medical words are dropped, so "leg" does not find table legs,
+- accents and case are ignored ("hattefjall" finds HATTEFJÄLL), and "1 st" is read as "1st",
+- the main noun decides stock: a "Laptop table" is a table, so laptops are not sold,
+- a few synonyms are mapped (crib to cot, couch to sofa, almirah to wardrobe).
+
+There is no stemming or stop-word removal: the embedding model reads whole sentences, so that kind of cleaning is not needed.
+
 ## Configuration
 
 All settings are environment variables, read by [config.py](config.py). See [.env.example](.env.example).
