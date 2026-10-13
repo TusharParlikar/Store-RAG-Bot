@@ -205,6 +205,10 @@ Not built yet:
 - Suggestions for what goes with the items in the cart.
 - A planner for bigger setups such as "an office for 30 people".
 - Saving the final order with an order number.
+- More empathy: a tone that matches the feeling through the whole chat instead of one opening line, and a gentle follow-up question ("who is the chair for?") before recommending.
+- Longer memory than the last 3 messages, so a need mentioned early still shapes later suggestions.
+- A shorter understanding prompt, to cut the 3,400 tokens a message costs and fit more chats in the free hosted limit.
+- Hindi and mixed Hindi-English messages.
 
 ## License
 
