@@ -8,6 +8,22 @@ Customers rarely ask for a product by name. They say "my leg is broken" or "we'r
 
 **Docs:** [how it works](docs/ARCHITECTURE.md)
 
+## Contents
+
+- [Example](#example)
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Deployment](#deployment)
+- [How it works](#how-it-works)
+- [Preprocessing](#preprocessing)
+- [Data](#data)
+- [Project structure](#project-structure)
+- [Tests](#tests)
+- [Limitations](#limitations)
+- [Roadmap](#roadmap)
+- [License](#license)
+
 ## Example
 
 > **Customer:** my leg is broken
@@ -57,6 +73,26 @@ streamlit run app/main.py
 ```
 
 Open http://localhost:8501. The first start downloads the embedding model, builds the search index and loads the LLM, which takes a few minutes on a laptop.
+
+## Configuration
+
+All settings are environment variables, read by [config.py](config.py). See [.env.example](.env.example).
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `LLM_BASE_URL` | no | `http://localhost:11434/v1` | OpenAI-compatible endpoint (Ollama or Groq) |
+| `LLM_API_KEY` | no | `ollama` | API key; set `<YOUR_GROQ_API_KEY>` for Groq |
+| `LLM_MODEL` | no | `qwen3:1.7b` | Model name (`qwen/qwen3-32b` on Groq) |
+| `LLM_TEMPERATURE` | no | `0.8` | Warmth of product replies (understanding uses 0, policy answers 0.3) |
+| `LLM_REASONING_EFFORT` | no | `none` | `none` turns Qwen3 thinking off; use `low` for models that reject `none` |
+| `LLM_KEEP_ALIVE` | no | `2h` for a local endpoint, otherwise unset | How long Ollama keeps the model loaded |
+| `EMBED_MODEL` | no | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
+
+`.env` is git-ignored. Never commit keys.
+
+## Deployment
+
+The live demo runs on Streamlit Community Cloud (main file `app/main.py`) with the model hosted on Groq. The app's Secrets hold the same settings as `.env`: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` and `LLM_REASONING_EFFORT`. Pushing to `main` redeploys it. The app sleeps when unused, so the first visit can take about a minute, and the free Groq limit covers about 60 messages a day.
 
 ## How it works
 
@@ -110,21 +146,11 @@ The model never decides on its own: it describes the message and puts facts into
 
 There is no stemming or stop-word removal: the embedding model reads whole sentences, so that kind of cleaning is not needed.
 
-## Configuration
+## Data
 
-All settings are environment variables, read by [config.py](config.py). See [.env.example](.env.example).
+Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from [TidyTuesday 2020-11-03](https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-11-03), with 2,962 unique products in 17 categories. Prices are converted from SAR to INR at a fixed rate (`SAR_TO_INR` = 23.5). The dataset has no warranty, benefit or pairing columns, so these are set per category in `CATEGORY_INFO` in [nlp/prepare_products.py](nlp/prepare_products.py). The store name and the policies in [data/rules/](data/rules/) are made up for the demo, and product links go to IKEA's site.
 
-| Variable | Required | Default | Purpose |
-|---|---|---|---|
-| `LLM_BASE_URL` | no | `http://localhost:11434/v1` | OpenAI-compatible endpoint (Ollama or Groq) |
-| `LLM_API_KEY` | no | `ollama` | API key; set `<YOUR_GROQ_API_KEY>` for Groq |
-| `LLM_MODEL` | no | `qwen3:1.7b` | Model name (`qwen/qwen3-32b` on Groq) |
-| `LLM_TEMPERATURE` | no | `0.8` | Warmth of product replies (understanding uses 0, policy answers 0.3) |
-| `LLM_REASONING_EFFORT` | no | `none` | `none` turns Qwen3 thinking off; use `low` for models that reject `none` |
-| `LLM_KEEP_ALIVE` | no | `2h` for a local endpoint, otherwise unset | How long Ollama keeps the model loaded |
-| `EMBED_MODEL` | no | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
-
-`.env` is git-ignored. Never commit keys.
+To rebuild from the raw file: `python nlp/prepare_products.py`, then `python -m rag.index`.
 
 ## Project structure
 
@@ -163,12 +189,6 @@ python -m tests.shopping        # 5 shopping trips, 26 turns, with the cart carr
 
 The scenarios cover prices, policies, needs and feelings, products not sold, off-topic questions, chit-chat, complaints, memory, picking a product and named-product links. On the local `qwen3:1.7b` model the shopping trips pass 26 of 26, and the 77 scenarios pass 75 of 77. On Groq (`openai/gpt-oss-120b`) the shopping trips pass 26 of 26; the 77 scenarios have not completed there, because the free daily token limit ran out.
 
-## Data
-
-Real IKEA product data, not generated: the IKEA Saudi Arabia scrape from [TidyTuesday 2020-11-03](https://github.com/rfordatascience/tidytuesday/tree/master/data/2020/2020-11-03), with 2,962 unique products in 17 categories. Prices are converted from SAR to INR at a fixed rate (`SAR_TO_INR` = 23.5). The dataset has no warranty, benefit or pairing columns, so these are set per category in `CATEGORY_INFO` in [nlp/prepare_products.py](nlp/prepare_products.py). The store name and the policies in [data/rules/](data/rules/) are made up for the demo, and product links go to IKEA's site.
-
-To rebuild from the raw file: `python nlp/prepare_products.py`, then `python -m rag.index`.
-
 ## Limitations
 
 With the local `qwen3:1.7b` model on a laptop CPU (i5-1335U, no GPU):
@@ -178,10 +198,6 @@ With the local `qwen3:1.7b` model on a laptop CPU (i5-1335U, no GPU):
 - **Free hosted limits.** A message costs about 3,400 tokens, mostly the long understanding prompt. Groq's free tier for `openai/gpt-oss-120b` allows 200,000 tokens a day, which is about 60 messages.
 
 A hosted model is much faster: on Groq, `openai/gpt-oss-120b` answers in 1 to 3 seconds. It needs `LLM_REASONING_EFFORT=low`, because it rejects `none`.
-
-## Deployment
-
-The live demo runs on Streamlit Community Cloud (main file `app/main.py`) with the model hosted on Groq. The app's Secrets hold the same settings as `.env`: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` and `LLM_REASONING_EFFORT`. Pushing to `main` redeploys it. The app sleeps when unused, so the first visit can take about a minute, and the free Groq limit covers about 60 messages a day.
 
 ## Roadmap
 
