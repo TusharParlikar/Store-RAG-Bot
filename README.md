@@ -1,4 +1,4 @@
-# Store RAG Bot
+# Agentic Dealer & Customer Support Copilot
 
 A chat assistant for a furniture store. It answers only from the store's own data and helps customers find, and buy, furniture that suits their situation.
 

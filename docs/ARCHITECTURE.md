@@ -1,6 +1,6 @@
 # Architecture
 
-How Store RAG Bot turns a customer message into a reply. For setup and an overview, see the [README](../README.md).
+How Agentic Dealer & Customer Support Copilot turns a customer message into a reply. For setup and an overview, see the [README](../README.md).
 
 ## Design rules
 
